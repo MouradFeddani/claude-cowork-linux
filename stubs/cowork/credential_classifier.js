@@ -165,7 +165,13 @@ function redactHomeDir(text) {
   }
   // Guard against an empty or root ('/') home, which would corrupt every path.
   if (typeof home !== 'string' || home.length < 2) return text;
-  return text.split(home).join('~');
+  // Only rewrite `home` when it forms a complete path segment — i.e. it is
+  // immediately followed by a path separator, ends the token, or is followed
+  // by a delimiter. A plain substring replace would corrupt a different path
+  // that merely shares the prefix (e.g. turn /home/bob2 into ~2 when
+  // home=/home/bob).
+  const escaped = home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text.replace(new RegExp(escaped + '(?=/|$|[\\s"\'`:,;)\\]}])', 'g'), '~');
 }
 
 module.exports = {

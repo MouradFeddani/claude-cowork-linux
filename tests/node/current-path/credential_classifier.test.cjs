@@ -208,6 +208,22 @@ describe('redactHomeDir', () => {
     });
   });
 
+  it('does NOT rewrite a different dir that shares the home prefix', () => {
+    // Regression: a plain substring replace would turn /home/testuser2/a
+    // into ~2/a. Only a complete path segment should be rewritten.
+    withHome(HOME, () => {
+      assert.equal(redactHomeDir('/home/testuser2/a'), '/home/testuser2/a');
+      assert.equal(redactHomeDir('/home/testuserX'), '/home/testuserX');
+    });
+  });
+
+  it('rewrites the home path when it is the entire token', () => {
+    withHome(HOME, () => {
+      assert.equal(redactHomeDir('/home/testuser'), '~');
+      assert.equal(redactHomeDir('cwd=/home/testuser done'), 'cwd=~ done');
+    });
+  });
+
   it('returns non-string / empty input unchanged', () => {
     withHome(HOME, () => {
       assert.equal(redactHomeDir(''), '');
