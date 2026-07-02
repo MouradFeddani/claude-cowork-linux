@@ -14,8 +14,10 @@ function loadSpaceNavHelpers() {
     __dirname, '..', '..', '..', 'stubs', 'frame-fix', 'frame-fix-wrapper.js'
   );
   const source = fs.readFileSync(wrapperPath, 'utf8');
+  // Boundaries are code sentinels (not comment text) so they survive comment
+  // rewraps/punctuation edits around the helper block.
   const start = source.indexOf('function shouldInterceptSpaceNavigation');
-  const end = source.indexOf('// IPC TAP — must be created before the early ipcMain patch');
+  const end = source.indexOf('const ipcTap = createIpcTap();');
   if (start === -1 || end === -1 || end <= start) {
     throw new Error('Failed to locate space-nav helper block in ' + wrapperPath);
   }
@@ -104,6 +106,18 @@ test('does NOT intercept a no-op navigation to the same route', () => {
     shouldInterceptSpaceNavigation(
       'https://claude.ai/cowork/space/abc',
       'https://claude.ai/cowork/space/abc'
+    ),
+    false
+  );
+});
+
+test('does NOT intercept a hash-only change on the same route', () => {
+  // path + query identical, only the fragment differs -> in-page anchor,
+  // not a navigation worth intercepting (hash is excluded from the no-op guard).
+  assert.equal(
+    shouldInterceptSpaceNavigation(
+      'https://claude.ai/cowork/space/abc?tab=files',
+      'https://claude.ai/cowork/space/abc?tab=files#section'
     ),
     false
   );

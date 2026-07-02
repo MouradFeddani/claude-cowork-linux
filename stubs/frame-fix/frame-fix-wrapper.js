@@ -532,7 +532,10 @@ function shouldInterceptSpaceNavigation(currentUrl, targetUrl) {
   // The SPA must already be loaded on claude.ai; otherwise a real navigation
   // (initial load, auth bounce) is required and must proceed untouched.
   if (cur.protocol !== 'https:' || cur.hostname !== 'claude.ai') return false;
-  // No-op navigation to the exact same route — nothing to intercept.
+  // No intercept when the space page (path + query) is unchanged. A
+  // fragment-only difference is an in-page anchor, not a navigation we need
+  // to convert — so hash is deliberately excluded here. (When we DO intercept
+  // a genuine route change, coworkSpaceRoute() still preserves any hash.)
   if (cur.pathname === tgt.pathname && cur.search === tgt.search) return false;
   return true;
 }
