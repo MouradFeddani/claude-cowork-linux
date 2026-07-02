@@ -8,6 +8,7 @@ const {
   getTranscriptProjectKeyCandidates,
   sanitizeTranscriptProjectKey,
 } = require('./transcript_store.js');
+const { redactHomeDir } = require('./credential_classifier.js');
 
 // ============================================================================
 // SESSION STORE - SESSION METADATA & STATE MANAGEMENT
@@ -319,7 +320,7 @@ function readSessionAuditInitEntries(sessionDirectory) {
   const parsed = lines.map((line) => parseAuditLine(line));
   const parseFailures = parsed.filter((entry, i) => entry === null && lines[i].trim()).length;
   if (parseFailures > 0) {
-    console.error('[session_store] ' + parseFailures + ' corrupt lines in ' + auditPath);
+    console.error('[session_store] ' + parseFailures + ' corrupt lines in ' + redactHomeDir(auditPath));
   }
   return parsed
     .filter((entry) => (

@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
@@ -24,7 +25,7 @@ function pathExists(targetPath) {
 }
 
 function createFileId() {
-  return 'file_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
+  return 'file_' + Date.now().toString(36) + '_' + crypto.randomBytes(5).toString('hex');
 }
 
 function parseRegistryLines(serializedValue) {

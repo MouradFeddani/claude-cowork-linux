@@ -25,7 +25,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { redactCredentials } = require('./credential_classifier.js');
+const { redactCredentials, redactHomeDir } = require('./credential_classifier.js');
 const { parseEipcChannel, classifyMethod, isPlatformError } = require('./eipc_channel.js');
 
 const MAX_PAYLOAD_LENGTH = 4000;
@@ -341,7 +341,7 @@ function createIpcTap(options) {
     }
 
     if (logPath) {
-      console.log('[IPC-TAP] Summary written to ' + logPath);
+      console.log('[IPC-TAP] Summary written to ' + redactHomeDir(logPath));
       console.log('[IPC-TAP] ' + summary.registrations + ' registered, '
         + summary.handleCalls + ' invoked, '
         + summary.handleErrors + ' errors ('
@@ -354,7 +354,7 @@ function createIpcTap(options) {
   // Write summary on exit
   process.on('exit', writeSummary);
 
-  console.log('[IPC-TAP] Enabled, logging to ' + (logPath || 'stdout'));
+  console.log('[IPC-TAP] Enabled, logging to ' + (logPath ? redactHomeDir(logPath) : 'stdout'));
 
   return {
     enabled: true,
