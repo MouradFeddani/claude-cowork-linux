@@ -499,6 +499,80 @@ function installLinuxMenuInterceptors(electronModule) {
 }
 
 // ============================================================
+// Cowork space navigation intercept (issue #147)
+// ============================================================
+// The Cowork "Projects" feature is served entirely from local, file-backed
+// IPC handlers (CoworkSpaces_$_*). A space created locally lives only on disk
+// (spaces.json) — Anthropic's backend has no record of its ID. Right after
+// creating a space, the webapp performs a FULL-PAGE navigation to
+// https://claude.ai/cowork/space/<id>. That round-trips to the backend, which
+// can't find the space and serves the "Project not found" page, so the
+// locally-stored space never gets a chance to load over IPC.
+//
+// Fix: catch that hard navigation while the SPA is already loaded on claude.ai
+// and convert it into an in-app (client-side) route change. The already-running
+// webapp then renders the space page and fetches its data via IPC instead of
+// hitting the backend.
+//
+// shouldInterceptSpaceNavigation() is intentionally narrow: it only fires for a
+// same-origin claude.ai cowork *space* URL when the SPA is already loaded on
+// claude.ai and the route is actually changing. First loads, auth redirects,
+// and external links are all left untouched.
+function shouldInterceptSpaceNavigation(currentUrl, targetUrl) {
+  let cur, tgt;
+  try {
+    cur = new URL(currentUrl);
+    tgt = new URL(targetUrl);
+  } catch (_) {
+    return false;
+  }
+  // Target must be a same-origin claude.ai cowork space route.
+  if (tgt.protocol !== 'https:' || tgt.hostname !== 'claude.ai') return false;
+  if (!/^\/cowork\/space\/[^/]+/.test(tgt.pathname)) return false;
+  // The SPA must already be loaded on claude.ai; otherwise a real navigation
+  // (initial load, auth bounce) is required and must proceed untouched.
+  if (cur.protocol !== 'https:' || cur.hostname !== 'claude.ai') return false;
+  // No intercept when the space page (path + query) is unchanged. A
+  // fragment-only difference is an in-page anchor, not a navigation we need
+  // to convert — so hash is deliberately excluded here. (When we DO intercept
+  // a genuine route change, coworkSpaceRoute() still preserves any hash.)
+  if (cur.pathname === tgt.pathname && cur.search === tgt.search) return false;
+  return true;
+}
+
+// Extract the SPA route (path + query + fragment) from a full space URL.
+// Returns null for anything that isn't parseable.
+function coworkSpaceRoute(targetUrl) {
+  try {
+    const u = new URL(targetUrl);
+    return u.pathname + u.search + u.hash;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Build the JS injected into the renderer to perform client-side navigation.
+// The route is JSON-encoded (never string-concatenated raw) so a hostile space
+// name/URL cannot break out of the string literal into executable code.
+function buildSpaNavigationScript(route) {
+  const target = JSON.stringify(String(route));
+  return [
+    '(function(){',
+    '  try {',
+    '    var t = ' + target + ';',
+    '    if (location.pathname + location.search + location.hash === t) return;',
+    '    history.pushState({}, "", t);',
+    // Next.js App Router (14.1+) reacts to history.pushState directly; older
+    // routers only listen for popstate. Dispatch both to be safe.
+    '    window.dispatchEvent(new PopStateEvent("popstate", { state: {} }));',
+    '  } catch (e) {',
+    '    try { location.assign(' + target + '); } catch (_) {}',
+    '  }',
+    '})();',
+  ].join('\n');
+}
+
+// ============================================================
 // IPC TAP — must be created before the early ipcMain patch so
 // it can instrument _invokeHandlers before any asar code runs.
 // ============================================================
@@ -1299,6 +1373,21 @@ Module.prototype.require = function(id) {
           });
           contents.on('did-navigate', () => {
             contents.insertCSS(_fixCSS).catch(() => {});
+          });
+          // Issue #147: convert a full-page navigation to a locally-created
+          // Cowork space into an in-app SPA route change, so it loads from IPC
+          // instead of round-tripping to the backend ("Project not found").
+          contents.on('will-navigate', (event, targetUrl) => {
+            let currentUrl = '';
+            try { currentUrl = contents.getURL(); } catch (_) {}
+            if (!shouldInterceptSpaceNavigation(currentUrl, targetUrl)) return;
+            const route = coworkSpaceRoute(targetUrl);
+            if (!route) return;
+            event.preventDefault();
+            console.log('[Cowork] Intercepted space navigation -> SPA route:', route);
+            contents.executeJavaScript(buildSpaNavigationScript(route)).catch((e) => {
+              console.error('[Cowork] SPA navigation failed:', e && e.message);
+            });
           });
         });
         console.log('[Frame Fix] CSS app-region fix registered for all webContents');
