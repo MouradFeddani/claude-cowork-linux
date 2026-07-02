@@ -9,7 +9,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { randomUUID } = require('crypto');
+const { randomUUID, randomBytes } = require('crypto');
 
 // Hard caps to prevent unbounded growth of spaces.json. Even with rate
 // limits a malicious renderer could grow the file to GB scale over time.
@@ -251,10 +251,11 @@ function createSpacesStore(options) {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      // Atomic write: write to temp file then rename. Use random suffix
+      // Atomic write: write to temp file then rename. Use a random suffix
       // (not just pid) so two SpacesStore instances in the same process
-      // can't collide on the temp filename.
-      const tmp = p + '.tmp.' + process.pid + '.' + Math.random().toString(36).slice(2);
+      // can't collide on the temp filename. Use a CSPRNG so the name isn't
+      // predictable (avoids temp-file races/symlink pre-creation).
+      const tmp = p + '.tmp.' + process.pid + '.' + randomBytes(8).toString('hex');
       fs.writeFileSync(tmp, payload, 'utf8');
       fs.renameSync(tmp, p);
       return true;

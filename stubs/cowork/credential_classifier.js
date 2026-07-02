@@ -148,10 +148,37 @@ function redactCredentials(text) {
   return out;
 }
 
+function redactHomeDir(text) {
+  // Replace the user's home-directory prefix with '~' in log output so that
+  // absolute paths don't leak the OS username. Desktop logs are routinely
+  // pasted into public bug reports (see the issue templates), so keeping the
+  // username out of them is basic PII hygiene. This is a display-only
+  // transform — it never touches the paths used for filesystem operations.
+  if (typeof text !== 'string' || text.length === 0) return text;
+  let home = typeof global !== 'undefined' ? global.__coworkPasswdHomedir : undefined;
+  if (typeof home !== 'string' || !home) {
+    try {
+      home = require('os').userInfo().homedir;
+    } catch (_) {
+      home = process.env.HOME || '';
+    }
+  }
+  // Guard against an empty or root ('/') home, which would corrupt every path.
+  if (typeof home !== 'string' || home.length < 2) return text;
+  // Only rewrite `home` when it forms a complete path segment — i.e. it is
+  // immediately followed by a path separator, ends the token, or is followed
+  // by a delimiter. A plain substring replace would corrupt a different path
+  // that merely shares the prefix (e.g. turn /home/bob2 into ~2 when
+  // home=/home/bob).
+  const escaped = home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text.replace(new RegExp(escaped + '(?=/|$|[\\s"\'`:,;)\\]}])', 'g'), '~');
+}
+
 module.exports = {
   classifyEnvEntry,
   isLikelyCredentialKey,
   isLikelyCredentialValue,
   redactCredentials,
+  redactHomeDir,
   shannonEntropy,
 };

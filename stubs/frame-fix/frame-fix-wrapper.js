@@ -93,6 +93,7 @@ const { createIpcTap } = require('./cowork/ipc_tap.js');
 const { createOverrideRegistry, matchOverride, extractEipcUuid, proactivelyRegisterOverrides, isProactiveChannel } = require('./cowork/ipc_overrides.js');
 const { createAutoPermissionsCap } = require('./cowork/auto_permissions_cap.js');
 const { createBridgeCanary } = require('./cowork/bridge_canary.js');
+const { redactHomeDir } = require('./cowork/credential_classifier.js');
 
 // Single cap instance for the process. Closure-private state lives inside
 // the factory; we just keep the wrapHandler reference. The cap is one of
@@ -250,7 +251,7 @@ function setupAssetDumper(win) {
         fs.writeFile(path.join(dumpDir, safeName), body, () => {
           dumpCount++;
           if (dumpCount <= 5 || dumpCount % 10 === 0) {
-            console.log('[Asset Dump] ' + dumpCount + ' files -> ' + dumpDir);
+            console.log('[Asset Dump] ' + dumpCount + ' files -> ' + redactHomeDir(dumpDir));
           }
         });
       }).catch(() => {});
@@ -260,8 +261,8 @@ function setupAssetDumper(win) {
   console.log('');
   console.log('╔══════════════════════════════════════════════════════════════╗');
   console.log('║  DEVTOOLS MODE  —  Asset dumper active                      ║');
-  console.log('║  Current: ' + dumpDir.padEnd(49) + '║');
-  console.log('║  Backup:  ' + bakDir.padEnd(49) + '║');
+  console.log('║  Current: ' + redactHomeDir(dumpDir).padEnd(49) + '║');
+  console.log('║  Backup:  ' + redactHomeDir(bakDir).padEnd(49) + '║');
   console.log('║  Diff with: diff <dir> <dir.bak> to spot protocol changes   ║');
   console.log('╚══════════════════════════════════════════════════════════════╝');
   console.log('');

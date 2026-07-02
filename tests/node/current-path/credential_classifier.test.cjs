@@ -8,6 +8,7 @@ const {
   isLikelyCredentialKey,
   isLikelyCredentialValue,
   redactCredentials,
+  redactHomeDir,
   shannonEntropy,
 } = require('../../../stubs/cowork/credential_classifier.js');
 
@@ -164,5 +165,79 @@ describe('redactCredentials', () => {
     const input = 'version=3.0.7-beta.1';
     const result = redactCredentials(input);
     assert.ok(!result.includes('[REDACTED]'));
+  });
+});
+
+describe('redactHomeDir', () => {
+  const HOME = '/home/testuser';
+  let prevHome;
+
+  // Pin the home directory via the global the wrapper sets, so the result is
+  // deterministic regardless of the machine running the tests.
+  function withHome(home, fn) {
+    prevHome = global.__coworkPasswdHomedir;
+    global.__coworkPasswdHomedir = home;
+    try {
+      return fn();
+    } finally {
+      global.__coworkPasswdHomedir = prevHome;
+    }
+  }
+
+  it('replaces the home-directory prefix with ~', () => {
+    withHome(HOME, () => {
+      assert.equal(
+        redactHomeDir('logging to /home/testuser/.local/state/claude-cowork/logs'),
+        'logging to ~/.local/state/claude-cowork/logs'
+      );
+    });
+  });
+
+  it('replaces every occurrence in the string', () => {
+    withHome(HOME, () => {
+      assert.equal(
+        redactHomeDir('/home/testuser/a and /home/testuser/b'),
+        '~/a and ~/b'
+      );
+    });
+  });
+
+  it('leaves paths outside the home directory untouched', () => {
+    withHome(HOME, () => {
+      assert.equal(redactHomeDir('/usr/bin/claude'), '/usr/bin/claude');
+    });
+  });
+
+  it('does NOT rewrite a different dir that shares the home prefix', () => {
+    // Regression: a plain substring replace would turn /home/testuser2/a
+    // into ~2/a. Only a complete path segment should be rewritten.
+    withHome(HOME, () => {
+      assert.equal(redactHomeDir('/home/testuser2/a'), '/home/testuser2/a');
+      assert.equal(redactHomeDir('/home/testuserX'), '/home/testuserX');
+    });
+  });
+
+  it('rewrites the home path when it is the entire token', () => {
+    withHome(HOME, () => {
+      assert.equal(redactHomeDir('/home/testuser'), '~');
+      assert.equal(redactHomeDir('cwd=/home/testuser done'), 'cwd=~ done');
+    });
+  });
+
+  it('returns non-string / empty input unchanged', () => {
+    withHome(HOME, () => {
+      assert.equal(redactHomeDir(''), '');
+      assert.equal(redactHomeDir(null), null);
+      assert.equal(redactHomeDir(42), 42);
+    });
+  });
+
+  it('does not corrupt paths when home is root or empty', () => {
+    withHome('/', () => {
+      assert.equal(redactHomeDir('/usr/bin/claude'), '/usr/bin/claude');
+    });
+    withHome('', () => {
+      assert.equal(redactHomeDir('/usr/bin/claude'), '/usr/bin/claude');
+    });
   });
 });
