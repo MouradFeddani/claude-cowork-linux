@@ -669,16 +669,6 @@ class SessionOrchestrator {
       translateVmPathStrict,
     });
 
-    // Symlink global config (skills, commands, etc.) into session .claude dir
-    if (typeof hostConfigDir === 'string' && hostConfigDir.trim()) {
-      try {
-        const resolvedConfigDir = fs.realpathSync(hostConfigDir);
-        symlinkGlobalConfig(resolvedConfigDir, trace);
-      } catch (e) {
-        trace('WARNING: Could not resolve CLAUDE_CONFIG_DIR for global config symlinks: ' + e.message);
-      }
-    }
-
     // Step 8: Update sessions API with OAuth token if available
     const spawnOAuthToken = translatedEnvVars.CLAUDE_CODE_OAUTH_TOKEN;
     if (
@@ -1830,65 +1820,12 @@ function transformSdkMessages(messages, sessionIdOverride) {
   return mergeConsecutiveAssistantMessages(normalizedMessages);
 }
 
-// Global Claude Code config directory (skills, commands, settings, etc.)
+// Global Claude Code config directory (~/.claude). Cowork now reads the user's
+// global config (CLAUDE.md, settings.json, plugins, etc.) directly from this
+// standard location, so it no longer needs to be composed into per-session
+// config dirs. It is only referenced here to locate the user's local skills
+// for --plugin-dir injection.
 const GLOBAL_CLAUDE_DIR = path.join(global.__coworkPasswdHomedir || os.userInfo().homedir, '.claude');
-
-/**
- * Symlink global Claude Code config into a session's CLAUDE_CONFIG_DIR.
- *
- * The CLI uses CLAUDE_CONFIG_DIR as its config root, which points to the
- * per-session .claude dir. Without these symlinks, the CLI can't find
- * the user's global skills, commands, settings, hooks, or CLAUDE.md.
- *
- * Only read-mostly global config is symlinked. Session-specific dirs
- * (projects, plans, session-env, backups, shell-snapshots) are left alone
- * so transcript storage and session isolation work correctly.
- *
- * @param {string} sessionClaudeDir - Resolved host path to session .claude dir
- * @param {function} [trace] - Logging function
- */
-function symlinkGlobalConfig(sessionClaudeDir, trace = () => {}) {
-  if (!fs.existsSync(GLOBAL_CLAUDE_DIR)) {
-    trace('No global .claude dir found, skipping config symlinks');
-    return;
-  }
-
-  const GLOBAL_DIRS = ['commands', 'skills', 'agents', 'hooks', 'plugins'];
-  const GLOBAL_FILES = ['CLAUDE.md', 'settings.json', 'settings.local.json'];
-
-  trace('=== SYMLINK GLOBAL CONFIG ===');
-  trace('Global: ' + GLOBAL_CLAUDE_DIR);
-  trace('Session: ' + sessionClaudeDir);
-
-  for (const name of [...GLOBAL_DIRS, ...GLOBAL_FILES]) {
-    const globalPath = path.join(GLOBAL_CLAUDE_DIR, name);
-    const sessionPath = path.join(sessionClaudeDir, name);
-
-    if (!fs.existsSync(globalPath)) {
-      continue;
-    }
-
-    try {
-      const stat = fs.lstatSync(sessionPath);
-      if (stat.isSymbolicLink() && fs.readlinkSync(sessionPath) === globalPath) {
-        continue;
-      }
-      trace('  SKIP ' + name + ': session already has its own copy');
-      continue;
-    } catch (_) {
-      // lstatSync throws if path doesn't exist -- create the symlink
-    }
-
-    try {
-      fs.symlinkSync(globalPath, sessionPath);
-      trace('  LINKED ' + name + ' -> ' + globalPath);
-    } catch (e) {
-      trace('  ERROR linking ' + name + ': ' + e.message);
-    }
-  }
-
-  trace('=== END GLOBAL CONFIG ===');
-}
 
 function createSessionOrchestrator(deps) {
   const orchestrator = new SessionOrchestrator(deps);
@@ -1903,7 +1840,6 @@ module.exports = {
   SessionOrchestrator,
   createSessionOrchestrator,
   removeResumeArgs,
-  symlinkGlobalConfig,
   // Bridge credential helpers
   readRemoteSessionIdFromBridgeState,
   // Bridge spawn args (exported for testing)
