@@ -97,6 +97,22 @@ assert_grep  "$CHUNK" 'return"darwin-x64"'             "getHostPlatform throw ->
 refute_grep  "$CHUNK" 'error:`Unsupported platform'    "return-style platform gate neutralized"
 assert_parses "$CHUNK" "chunk parses after enable-cowork.py"
 
+# Exit-code contract that install.sh apply_patches relies on to log success
+# accurately: a file with the gate (or already patched) exits 0; a shim with no
+# gate exits non-zero. apply_patches only reports success if >=1 target exits 0.
+if python3 "$REPO_ROOT/enable-cowork.py" "$CHUNK" >/dev/null 2>&1; then
+  pass "re-running on an already-patched gate file exits 0 (idempotent)"
+else
+  fail "re-running on an already-patched gate file should exit 0"
+fi
+SHIM="$TMP/shim_index.js"
+printf '"use strict";\nrequire("./index.chunk-V9ybBkRT.js");\n' > "$SHIM"
+if python3 "$REPO_ROOT/enable-cowork.py" "$SHIM" >/dev/null 2>&1; then
+  fail "shim with no platform gate should exit non-zero"
+else
+  pass "shim with no platform gate exits non-zero (apply_patches won't false-succeed)"
+fi
+
 # ---------------------------------------------------------------------------
 section "3. index.js -> chunk discovery (install.sh / launch.sh)"
 # ---------------------------------------------------------------------------

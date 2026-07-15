@@ -724,12 +724,26 @@ apply_patches() {
         [[ -n "$chunk" && -f "$build_dir/$chunk" ]] && targets+=("$build_dir/$chunk")
     done < <(grep -oE 'index\.chunk-[A-Za-z0-9_-]+\.js' "$index_js" | sort -u)
 
+    # enable-cowork.py exits 0 when it finds (or has already patched) the
+    # platform gate in a file, and 1 otherwise. On split-entry builds the gate
+    # lives in exactly one chunk, so index.js (the shim) and the other files
+    # legitimately exit 1 — that is expected, not a failure. Only treat the run
+    # as successful if at least one target was patched; if none were, the bundle
+    # layout has changed and Cowork would not be enabled, so warn loudly rather
+    # than print a misleading "Patches applied".
     log_info "Applying cowork patch to ${#targets[@]} file(s)..."
-    local t
+    local t any_patched=""
     for t in "${targets[@]}"; do
-        python3 "$patch_script" "$t" || log_warn "Patch may have already been applied: ${t##*/}"
+        if python3 "$patch_script" "$t"; then
+            any_patched=1
+        fi
     done
-    log_success "Patches applied"
+    if [[ -n "$any_patched" ]]; then
+        log_success "Patches applied"
+    else
+        log_warn "Cowork patch matched no target: the platform gate was not found in index.js or any index.chunk-*.js."
+        log_warn "The Claude Desktop bundle layout may have changed; Cowork may not be enabled. See the enable-cowork.py output above."
+    fi
 }
 
 # ============================================================
