@@ -5,16 +5,18 @@ to work with claude-cowork-linux. `install.sh` and the launcher grep the
 machine-readable lines below; the table further down is for humans.
 
 <!-- machine-readable; do not remove the next two lines -->
-<!-- LAST_TESTED_ASAR_VERSION=1.6259.1 -->
-<!-- LAST_TESTED_DATE=2026-05-14 -->
+<!-- LAST_TESTED_ASAR_VERSION=1.19367.0 -->
+<!-- LAST_TESTED_DATE=2026-07-15 -->
 
 ## Tested versions
 
-| Asar     | Status     | Date       | Notes                                                |
-|:---------|:-----------|:-----------|:-----------------------------------------------------|
-| 1.6259.1 | [OK]       | 2026-05-14 | v5.1.0 baseline. Activity stubs and bridge rails verified via test suite. |
-| 1.6608.2 | [PARTIAL]  | 2026-05-07 | `/setup-cowork` reports "Unsupported platform: linux-x64" -- see issue #114. |
-| 1.6700.0 | [UNTESTED] | -          | Not yet exercised by any contributor.                |
+| Asar      | Status     | Date       | Notes                                                |
+|:----------|:-----------|:-----------|:-----------------------------------------------------|
+| 1.6259.1  | [OK]       | 2026-05-14 | v5.1.0 baseline. Activity stubs and bridge rails verified via test suite. |
+| 1.6608.2  | [PARTIAL]  | 2026-05-07 | `/setup-cowork` reports "Unsupported platform: linux-x64" -- see issue #114. |
+| 1.6700.0  | [UNTESTED] | -          | Not yet exercised by any contributor.                |
+| 1.19367.0 | [OK]       | 2026-07-15 | First **split-entry** build: `index.pre.js` + `index.js` shim that require()s the real code from `index.chunk-*.js`. Requires the entry-routing fix (#154/#157) and chunk-aware patching (install.sh/launch.sh/enable-cowork.py discover and patch the chunk; identifier matching generalized for per-build minifier rotation). End-to-end launch + Cowork session reported by contributors in #152/#154; patch logic covered by `tests/test-cowork-patch.sh`. Not re-exercised via a GUI session by a maintainer. |
+| 1.20186.0 | [PARTIAL]  | 2026-07-15 | Split-entry bundle; installer/launcher patching applies as on 1.19367.0. The **AUR** `PKGBUILD` still needs split-bundle handling and a `package.json` `main` rewrite -- see #156. Contributor reports the packed app reaches startup and passes the test suite on this version. |
 
 Status legend:
 

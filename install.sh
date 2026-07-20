@@ -694,7 +694,8 @@ seed_version_sentinel() {
 # ============================================================
 
 apply_patches() {
-    local index_js="$INSTALL_DIR/linux-app-extracted/.vite/build/index.js"
+    local build_dir="$INSTALL_DIR/linux-app-extracted/.vite/build"
+    local index_js="$build_dir/index.js"
     local script_dir
     script_dir=$(cd "$(dirname "$0")" && pwd)
     local patch_script=""
@@ -706,12 +707,42 @@ apply_patches() {
         patch_script="$INSTALL_DIR/enable-cowork.py"
     fi
 
-    if [[ -n "$patch_script" && -f "$index_js" ]]; then
-        log_info "Applying cowork patch..."
-        python3 "$patch_script" "$index_js" || log_warn "Patch may have already been applied"
+    if [[ -z "$patch_script" || ! -f "$index_js" ]]; then
+        log_warn "Patch script or index.js not found, skipping patches"
+        return
+    fi
+
+    # Newer Claude Desktop builds emit index.js as a thin entry shim that
+    # require()s the real main code from an index.chunk-<hash>.js file, so the
+    # platform-gate / IPC / host-platform patterns live in the chunk, not in
+    # index.js. Patch index.js plus every chunk it require()s; enable-cowork.py
+    # is idempotent (marker-guarded) and reports "not found" harmlessly for
+    # files that don't contain a given pattern.
+    local -a targets=("$index_js")
+    local chunk
+    while IFS= read -r chunk; do
+        [[ -n "$chunk" && -f "$build_dir/$chunk" ]] && targets+=("$build_dir/$chunk")
+    done < <(grep -oE 'index\.chunk-[A-Za-z0-9_-]+\.js' "$index_js" | sort -u)
+
+    # enable-cowork.py exits 0 when it finds (or has already patched) the
+    # platform gate in a file, and 1 otherwise. On split-entry builds the gate
+    # lives in exactly one chunk, so index.js (the shim) and the other files
+    # legitimately exit 1 — that is expected, not a failure. Only treat the run
+    # as successful if at least one target was patched; if none were, the bundle
+    # layout has changed and Cowork would not be enabled, so warn loudly rather
+    # than print a misleading "Patches applied".
+    log_info "Applying cowork patch to ${#targets[@]} file(s)..."
+    local t any_patched=""
+    for t in "${targets[@]}"; do
+        if python3 "$patch_script" "$t"; then
+            any_patched=1
+        fi
+    done
+    if [[ -n "$any_patched" ]]; then
         log_success "Patches applied"
     else
-        log_warn "Patch script or index.js not found, skipping patches"
+        log_warn "Cowork patch matched no target: the platform gate was not found in index.js or any index.chunk-*.js."
+        log_warn "The Claude Desktop bundle layout may have changed; Cowork may not be enabled. See the enable-cowork.py output above."
     fi
 }
 
