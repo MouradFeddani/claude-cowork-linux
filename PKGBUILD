@@ -169,14 +169,18 @@ JSEOF
     # pattern is simply skipped).
     local _build_dir="${_ext}/.vite/build"
     local -a _index_targets=()
-    if [ -f "$_indexjs" ]; then
-        _index_targets+=("$_indexjs")
-        local _chunk
-        while IFS= read -r _chunk; do
-            [ -n "$_chunk" ] && [ -f "$_build_dir/$_chunk" ] \
-                && _index_targets+=("$_build_dir/$_chunk")
-        done < <(grep -oE 'index\.chunk-[A-Za-z0-9_-]+\.js' "$_indexjs" | sort -u)
+    if [ ! -f "$_indexjs" ]; then
+        echo "ERROR: main-process entry not found at $_indexjs" >&2
+        echo "       The extracted Claude Desktop bundle layout may have changed;" >&2
+        echo "       cannot locate the code to patch, so Cowork could not be enabled." >&2
+        return 1
     fi
+    _index_targets+=("$_indexjs")
+    local _chunk
+    while IFS= read -r _chunk; do
+        [ -n "$_chunk" ] && [ -f "$_build_dir/$_chunk" ] \
+            && _index_targets+=("$_build_dir/$_chunk")
+    done < <(grep -oE 'index\.chunk-[A-Za-z0-9_-]+\.js' "$_indexjs" | sort -u)
 
     # patch_index <log msg> <grep -E guard> <sed -E script>
     # Runs the sed against every main-process code file matching the guard; logs
@@ -251,19 +255,28 @@ JSEOF
     # guards, and host-platform code live in the chunk (not index.js), so run
     # enable-cowork.py across index.js plus every discovered chunk. The script is
     # idempotent (marker-guarded) and exits non-zero when a file lacks the
-    # platform gate (expected for the shim and unrelated chunks), so require at
-    # least one target to patch successfully; otherwise fail the build loudly
-    # rather than ship a package where Cowork is silently not enabled.
+    # platform gate (expected for the shim and chunks without it). Capture each
+    # run's output: print it when the file was patched, but suppress the script's
+    # "Platform-gate function not found" noise for the expected misses so a
+    # successful build log stays clean. Require at least one target to patch;
+    # otherwise fail the build loudly — surfacing the stashed output to diagnose
+    # a bundle-layout change — rather than ship a package with Cowork disabled.
     echo "Applying cowork patch to ${#_index_targets[@]} file(s)..."
-    local _t _any_patched=""
+    local _t _out _any_patched="" _miss_log=""
     for _t in "${_index_targets[@]}"; do
-        if python "${_repo}/enable-cowork.py" "$_t"; then
+        if _out="$(python "${_repo}/enable-cowork.py" "$_t" 2>&1)"; then
             _any_patched=1
+            [ -n "$_out" ] && printf '%s\n' "$_out"
+        else
+            echo "  Skipped ${_t##*/} (no platform gate; patched in another target)"
+            _miss_log+="--- ${_t##*/} ---"$'\n'"$_out"$'\n'
         fi
     done
     if [ -z "$_any_patched" ]; then
         echo "ERROR: cowork platform gate not found in index.js or any index.chunk-*.js" >&2
         echo "       Claude Desktop's bundle layout may have changed; Cowork would not be enabled." >&2
+        echo "       enable-cowork.py output follows:" >&2
+        printf '%s' "$_miss_log" >&2
         return 1
     fi
     echo "Cowork patches applied"
