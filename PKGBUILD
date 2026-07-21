@@ -1,7 +1,7 @@
 # Maintainer: Zack Fitch <zack@internetuniverse.org>
 pkgname=claude-cowork-linux
 pkgver=1.1.4010
-pkgrel=11
+pkgrel=12
 pkgdesc="Anthropic Claude Desktop with Cowork (local agent) support for Linux"
 arch=('x86_64')
 url="https://github.com/johnzfitch/claude-cowork-linux"
@@ -160,29 +160,76 @@ JSEOF
         echo "WARN: asar entry-point patch skipped (target not found)"
     fi
 
-    # Strip macOS titlebar opts (Vite ESM bypasses wrapper's require-Proxy).
-    if grep -q 'titleBarOverlay' "$_indexjs"; then
-        sed -i 's/titleBarStyle:"hidden",titleBarOverlay:[A-Za-z0-9_]\+,trafficLightPosition:[A-Za-z0-9_]\+,//g' "$_indexjs"
-        sed -i 's/titleBarStyle:"hiddenInset",autoHideMenuBar:!0,skipTaskbar:!0/autoHideMenuBar:!0/g' "$_indexjs"
-    else
-        echo "WARN: titlebar patch skipped (target not found)"
+    # Locate the main-process code file(s). Newer Claude Desktop builds (asar
+    # 1.19367.0+) emit index.js as a thin entry shim that require()s the real
+    # code from an index.chunk-<hash>.js file (the <hash> rotates every build);
+    # older builds keep everything in index.js. Patches must hit whichever file
+    # actually holds the code, so collect index.js plus every chunk it require()s
+    # and apply each grep-guarded patch across all of them (a file lacking the
+    # pattern is simply skipped).
+    local _build_dir="${_ext}/.vite/build"
+    local -a _index_targets=()
+    if [ ! -f "$_indexjs" ]; then
+        echo "ERROR: main-process entry not found at $_indexjs" >&2
+        echo "       The extracted Claude Desktop bundle layout may have changed;" >&2
+        echo "       cannot locate the code to patch, so Cowork could not be enabled." >&2
+        return 1
     fi
+    _index_targets+=("$_indexjs")
+    local _chunk
+    while IFS= read -r _chunk; do
+        [ -n "$_chunk" ] && [ -f "$_build_dir/$_chunk" ] \
+            && _index_targets+=("$_build_dir/$_chunk")
+    done < <(grep -oE 'index\.chunk-[A-Za-z0-9_-]+\.js' "$_indexjs" | sort -u)
+
+    # patch_index <log msg> <grep -E guard> <sed -E script>
+    # Runs the sed against every main-process code file matching the guard; logs
+    # once if any matched, warns once if none did. Minified identifiers are
+    # matched with [A-Za-z0-9_$]+ so the patches survive per-build var renaming.
+    patch_index() {
+        local msg="$1" pat="$2" script="$3" f matched=""
+        for f in "${_index_targets[@]}"; do
+            if grep -qE "$pat" "$f" 2>/dev/null; then
+                sed -i -E "$script" "$f"
+                matched=1
+            fi
+        done
+        if [ -n "$matched" ]; then
+            echo "$msg"
+        else
+            echo "WARN: patch skipped (target not found): $msg"
+        fi
+    }
+
+    # Strip macOS titlebar opts (Vite ESM bypasses wrapper's require-Proxy).
+    patch_index "Stripping macOS titlebar options (main window)..." \
+        'titleBarStyle:"hidden",titleBarOverlay:[A-Za-z0-9_$]+,trafficLightPosition:[A-Za-z0-9_$]+,' \
+        's/titleBarStyle:"hidden",titleBarOverlay:[A-Za-z0-9_$]+,trafficLightPosition:[A-Za-z0-9_$]+,//g'
+    patch_index "Stripping macOS titlebar options (about window)..." \
+        'titleBarStyle:"hiddenInset",autoHideMenuBar:!0,skipTaskbar:!0' \
+        's/titleBarStyle:"hiddenInset",autoHideMenuBar:!0,skipTaskbar:!0/autoHideMenuBar:!0/g'
 
     # Drop isPackaged check on file:// preloads (else renderer shell never loads).
-    if grep -q 'e\.protocol==="file:"&&Ee\.app\.isPackaged===!0' "$_indexjs"; then
-        sed -i 's/e\.protocol==="file:"&&Ee\.app\.isPackaged===!0/e.protocol==="file:"/g' "$_indexjs"
-    else
-        echo "WARN: file:// preload patch skipped (target not found)"
-    fi
+    # The protocol/app identifiers are minified and rotate per build, so match
+    # with [A-Za-z0-9_$]+ rather than the old hardcoded e./Ee. names.
+    patch_index "Patching origin validation for file:// preloads..." \
+        '[A-Za-z0-9_$]+\.protocol==="file:"&&[A-Za-z0-9_$]+\.app\.isPackaged===!0' \
+        's/([A-Za-z0-9_$]+)\.protocol==="file:"&&[A-Za-z0-9_$]+\.app\.isPackaged===!0/\1.protocol==="file:"/g'
 
     # Add linux branch to getHostPlatform() (without this, the minified
     # platform switch throws "Unsupported platform: linux-x64" and the
     # ClaudeCode.prepare IPC fails -- Cowork tasks fail in the UI with a
     # generic "Something went wrong" banner).
+    # This inline pass targets index.js only: its insert hardcodes the arch
+    # variable name (A), which is minifier-assigned and unsafe to splice into a
+    # chunk where it may differ. On split-entry builds this switch lives in the
+    # chunk, where enable-cowork.py's host-platform patch (run across all targets
+    # below) handles it instead — so finding nothing here is expected, not a bug.
     if grep -q 'win32-arm64":"win32-x64";throw new Error' "$_indexjs"; then
         sed -i 's|win32-arm64":"win32-x64";throw new Error|win32-arm64":"win32-x64";if(process.platform==="linux")return A==="arm64"?"linux-arm64":"linux-x64";throw new Error|' "$_indexjs"
+        echo "Patched getHostPlatform() linux branch in index.js"
     else
-        echo "WARN: linux-x64 platform patch skipped (target not found)"
+        echo "Note: inline getHostPlatform patch not applied to index.js (handled by enable-cowork.py on split-entry builds)"
     fi
 
     # Duplicate i18n JSONs into resources/i18n/ (bundle reads from both paths).
@@ -204,10 +251,35 @@ JSEOF
         echo "WARN: bash/sh allowlist patch skipped (target not found or already patched)"
     fi
 
-    # Apply cowork patch
-    echo "Applying cowork patch..."
-    python "${_repo}/enable-cowork.py" \
-        "${srcdir}/linux-app-extracted/.vite/build/index.js"
+    # Apply cowork patch. On split-entry builds the platform gate, IPC origin
+    # guards, and host-platform code live in the chunk (not index.js), so run
+    # enable-cowork.py across index.js plus every discovered chunk. The script is
+    # idempotent (marker-guarded) and exits non-zero when a file lacks the
+    # platform gate (expected for the shim and chunks without it). Capture each
+    # run's output: print it when the file was patched, but suppress the script's
+    # "Platform-gate function not found" noise for the expected misses so a
+    # successful build log stays clean. Require at least one target to patch;
+    # otherwise fail the build loudly — surfacing the stashed output to diagnose
+    # a bundle-layout change — rather than ship a package with Cowork disabled.
+    echo "Applying cowork patch to ${#_index_targets[@]} file(s)..."
+    local _t _out _any_patched="" _miss_log=""
+    for _t in "${_index_targets[@]}"; do
+        if _out="$(python "${_repo}/enable-cowork.py" "$_t" 2>&1)"; then
+            _any_patched=1
+            [ -n "$_out" ] && printf '%s\n' "$_out"
+        else
+            echo "  Skipped ${_t##*/} (no platform gate; patched in another target)"
+            _miss_log+="--- ${_t##*/} ---"$'\n'"$_out"$'\n'
+        fi
+    done
+    if [ -z "$_any_patched" ]; then
+        echo "ERROR: cowork platform gate not found in index.js or any index.chunk-*.js" >&2
+        echo "       Claude Desktop's bundle layout may have changed; Cowork would not be enabled." >&2
+        echo "       enable-cowork.py output follows:" >&2
+        printf '%s' "$_miss_log" >&2
+        return 1
+    fi
+    echo "Cowork patches applied"
 
     # Repack into app.asar
     echo "Repacking app.asar..."

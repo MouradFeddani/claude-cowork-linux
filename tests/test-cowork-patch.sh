@@ -155,5 +155,42 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+section "5. PKGBUILD build() patches reach the chunk (AUR path, issue #156)"
+# ---------------------------------------------------------------------------
+# The AUR PKGBUILD applies the same class of patches as launch.sh, but in its
+# own build() function. It regressed once (issue #156): it patched index.js
+# only and hardcoded minified identifiers, silently disabling Cowork on
+# split-entry builds. Extract its patch_index() helper + invocations verbatim
+# and exercise them on a chunk with rotated identifiers so the drift can't recur.
+PKGBLOCK="$TMP/pkg_patch_block.sh"
+awk '/^    patch_index\(\) \{/{inf=1} inf{print} inf&&/^    \}/{inf=0}' "$REPO_ROOT/PKGBUILD" > "$PKGBLOCK"
+grep -A2 '^    patch_index "' "$REPO_ROOT/PKGBUILD" | grep -v '^--$' >> "$PKGBLOCK"
+PKCALLS="$(grep -c '^    patch_index ' "$PKGBLOCK" || true)"
+if [[ "${PKCALLS:-0}" -lt 1 ]]; then
+  fail "extracted patch_index block from PKGBUILD (found $PKCALLS calls)"
+else
+  pass "extracted patch_index block from PKGBUILD ($PKCALLS calls)"
+  PKCHUNK="$TMP/pkg_chunk.js"
+  write_patch_fixture "$PKCHUNK"
+  ( _index_targets=("$PKCHUNK"); source "$PKGBLOCK" ) >/dev/null 2>&1
+  refute_grep "$PKCHUNK" 'titleBarStyle:"hidden"'          "PKGBUILD: main-window titlebar removed (chunk)"
+  refute_grep "$PKCHUNK" 'titleBarStyle:"hiddenInset"'     "PKGBUILD: about-window titlebar removed (chunk)"
+  assert_grep "$PKCHUNK" 'return Zq\.protocol==="file:"\}' "PKGBUILD: origin isPackaged dropped for file:// (chunk)"
+  assert_parses "$PKCHUNK" "PKGBUILD: chunk parses after patch_index seds"
+fi
+# Source-level guards: the recipe must discover chunks and run enable-cowork.py
+# across every discovered target, never regress to the index.js-only invocation.
+if grep -qF 'chunk-[A-Za-z0-9_-]+' "$REPO_ROOT/PKGBUILD"; then
+  pass "PKGBUILD: discovers index.chunk-*.js from the shim"
+else
+  fail "PKGBUILD: chunk discovery missing"
+fi
+if grep -q 'enable-cowork.py" "$_t"' "$REPO_ROOT/PKGBUILD"; then
+  pass "PKGBUILD: runs enable-cowork.py across every discovered target"
+else
+  fail "PKGBUILD: enable-cowork.py not run per-target (regressed to index.js only?)"
+fi
+
+# ---------------------------------------------------------------------------
 echo -e "\n${BOLD}Summary:${NC} ${GREEN}${PASS} passed${NC}, ${RED}${FAIL} failed${NC}, ${YELLOW}${SKIP} skipped${NC}"
 [[ "$FAIL" -eq 0 ]]
