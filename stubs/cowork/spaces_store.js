@@ -20,7 +20,19 @@ const MAX_PROJECTS_PER_SPACE = 500;
 const MAX_LINKS_PER_SPACE = 500;
 
 function createSpacesStore(options) {
-  const { localAgentRoot, isPathAllowed, trace = () => {} } = options || {};
+  const { localAgentRoot, isPathAllowed, trace = () => {}, emit = () => {} } = options || {};
+
+  // Notify the renderer of a space mutation so its UI updates live. On macOS
+  // the native Swift module emits these events; on Linux nothing did, so
+  // create / archive / delete / add-folder only became visible after an app
+  // restart (which forces a fresh getAllSpaces()). The renderer's onSpaceEvent
+  // handler upserts e.space by id on 'created'/'updated' and drops e.space.id
+  // on 'deleted'. emit is best-effort: a throwing/absent transport must never
+  // fail the underlying mutation, which has already been persisted.
+  function emitSpaceEvent(type, space) {
+    if (!space) return;
+    try { emit({ type, space }); } catch (e) { trace('[spaces] emit failed: ' + e.message); }
+  }
 
   // Rate limiter for write operations. A compromised renderer can't exhaust
   // disk by spamming createSpace/updateSpace/etc.
@@ -140,6 +152,32 @@ function createSpacesStore(options) {
   // Legacy boolean variant kept for callers that only need the predicate.
   function isWithinRegisteredFolder(filePath) {
     return resolveWithinRegisteredFolder(filePath) !== null;
+  }
+
+  // Also allow READ access within a space's own auto-memory dir —
+  // <dir-of-spaces.json>/spaces/<spaceId>/memory — which the CoWork UI browses
+  // via listFolderContents/readFileContents. These live under localAgentRoot,
+  // not a registered project folder, so resolveWithinRegisteredFolder alone
+  // rejects them (observed as "listFolderContents BLOCKED: .../spaces/<id>/
+  // memory"). Scope strictly to the ".../spaces/<id>/memory" subtree so the
+  // rest of localAgentRoot (spaces.json, session transcripts) stays off-limits.
+  function resolveWithinSpaceMemory(filePath) {
+    const resolved = resolvePath(filePath);
+    if (!resolved) return null;
+    const p = discoverSpacesPath();
+    if (!p) return null;
+    let spacesRoot = path.join(path.dirname(p), 'spaces');
+    try { spacesRoot = fs.realpathSync(spacesRoot); } catch (_) {}
+    if (resolved !== spacesRoot && !resolved.startsWith(spacesRoot + path.sep)) return null;
+    // Require a ".../<spaceId>/memory" segment: only the memory subtree is browsable.
+    const rel = resolved.slice(spacesRoot.length);
+    return /^[/\\][^/\\]+[/\\]memory([/\\]|$)/.test(rel) ? resolved : null;
+  }
+
+  // Read-path resolution for the CoWork spaces UI: a path is browsable if it is
+  // within a registered project folder OR within a space's auto-memory subtree.
+  function resolveReadable(filePath) {
+    return resolveWithinRegisteredFolder(filePath) || resolveWithinSpaceMemory(filePath);
   }
 
   // Discover the spaces.json path by walking localAgentRoot/<accountId>/<orgId>/
@@ -303,6 +341,7 @@ function createSpacesStore(options) {
       return null;
     }
     trace('[spaces] Created space: ' + newSpace.id + ' (' + newSpace.name + ')');
+    emitSpaceEvent('created', newSpace);
     return newSpace;
   }
 
@@ -327,6 +366,7 @@ function createSpacesStore(options) {
     spaces[index] = updated;
     if (!writeSpaces(spaces)) return null;
     trace('[spaces] Updated space: ' + spaceId);
+    emitSpaceEvent('updated', updated);
     return updated;
   }
 
@@ -338,6 +378,7 @@ function createSpacesStore(options) {
     }
     if (!writeSpaces(filtered)) return false;
     trace('[spaces] Deleted space: ' + spaceId);
+    emitSpaceEvent('deleted', { id: spaceId });
     return true;
   }
 
@@ -366,6 +407,7 @@ function createSpacesStore(options) {
     }
     space.updatedAt = Date.now();
     if (!writeSpaces(spaces)) return null;
+    emitSpaceEvent('updated', space);
     return space;
   }
 
@@ -377,6 +419,7 @@ function createSpacesStore(options) {
     space.folders = space.folders.filter(f => f.path !== folderPath && f.path !== resolved);
     space.updatedAt = Date.now();
     if (!writeSpaces(spaces)) return null;
+    emitSpaceEvent('updated', space);
     return space;
   }
 
@@ -390,6 +433,7 @@ function createSpacesStore(options) {
     space.projects.push(sanitized);
     space.updatedAt = Date.now();
     if (!writeSpaces(spaces)) return null;
+    emitSpaceEvent('updated', space);
     return space;
   }
 
@@ -401,6 +445,7 @@ function createSpacesStore(options) {
     space.projects = space.projects.filter(p => (p && 'id' in p ? p.id : p) !== projectId);
     space.updatedAt = Date.now();
     if (!writeSpaces(spaces)) return null;
+    emitSpaceEvent('updated', space);
     return space;
   }
 
@@ -414,6 +459,7 @@ function createSpacesStore(options) {
     space.links.push(sanitized);
     space.updatedAt = Date.now();
     if (!writeSpaces(spaces)) return null;
+    emitSpaceEvent('updated', space);
     return space;
   }
 
@@ -424,6 +470,7 @@ function createSpacesStore(options) {
     space.links = space.links.filter(l => (l && 'id' in l ? l.id : l) !== linkId);
     space.updatedAt = Date.now();
     if (!writeSpaces(spaces)) return null;
+    emitSpaceEvent('updated', space);
     return space;
   }
 
@@ -442,10 +489,23 @@ function createSpacesStore(options) {
     return spacesDir;
   }
 
-  function listFolderContents(_event, folderPath) {
-    const resolved = resolveWithinRegisteredFolder(folderPath);
+  // asar 1.22209.x changed the CoworkSpaces file-op contract from (path) to
+  // (spaceId, path): a spaceId was prepended and the real path moved to
+  // argument position 1. Older builds pass just (path). Accept BOTH shapes so
+  // the stub works across bundle versions (and survives a rollback): prefer the
+  // trailing path argument when it's a non-empty string, else fall back to the
+  // first. Without this, the stub reads the spaceId (a UUID) as the path,
+  // resolveWithinRegisteredFolder rejects it, and folder browsing/file reads
+  // silently return empty.
+  function pickPathArg(a, b) {
+    return (typeof b === 'string' && b.length > 0) ? b : a;
+  }
+
+  function listFolderContents(_event, spaceIdOrPath, folderPath) {
+    const target = pickPathArg(spaceIdOrPath, folderPath);
+    const resolved = resolveReadable(target);
     if (!resolved) {
-      trace('[spaces] listFolderContents BLOCKED: ' + folderPath);
+      trace('[spaces] listFolderContents BLOCKED: ' + target);
       return [];
     }
     try {
@@ -461,10 +521,11 @@ function createSpacesStore(options) {
     }
   }
 
-  function readFileContents(_event, filePath) {
-    const resolved = resolveWithinRegisteredFolder(filePath);
+  function readFileContents(_event, spaceIdOrPath, filePath) {
+    const target = pickPathArg(spaceIdOrPath, filePath);
+    const resolved = resolveReadable(target);
     if (!resolved) {
-      trace('[spaces] readFileContents BLOCKED: ' + filePath);
+      trace('[spaces] readFileContents BLOCKED: ' + target);
       return null;
     }
     try {
@@ -474,10 +535,11 @@ function createSpacesStore(options) {
     }
   }
 
-  function openFile(_event, filePath) {
-    const resolved = resolveWithinRegisteredFolder(filePath);
+  function openFile(_event, spaceIdOrPath, filePath) {
+    const target = pickPathArg(spaceIdOrPath, filePath);
+    const resolved = resolveWithinRegisteredFolder(target);
     if (!resolved) {
-      trace('[spaces] openFile BLOCKED: ' + filePath);
+      trace('[spaces] openFile BLOCKED: ' + target);
       return false;
     }
     try {
@@ -606,6 +668,7 @@ function createSpacesStore(options) {
     space.autoDescription = sanitized;
     space.updatedAt = Date.now();
     if (!writeSpaces(spaces)) return null;
+    emitSpaceEvent('updated', space);
     return space;
   }
 
@@ -623,8 +686,11 @@ function createSpacesStore(options) {
     };
   }
 
-  // Event subscription — no-op, the renderer doesn't need real-time events on Linux
-  // since we don't have native filesystem watchers wired to spaces.
+  // Event subscription handler — intentionally a no-op. The renderer does NOT
+  // drive live updates through this IPC method: its preload subscribes directly
+  // with ipcRenderer.on(<onSpaceEvent channel>) and we push mutations to that
+  // channel via the injected `emit` (see emitSpaceEvent above). This handler
+  // only needs to exist so the method call resolves without error.
   function onSpaceEvent(_event, _callback) {
     return { dispose: () => {} };
   }

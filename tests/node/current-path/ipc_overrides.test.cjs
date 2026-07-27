@@ -538,3 +538,53 @@ test('setMenuBarEnabled returns null', async () => {
   const result = await handler(null, true);
   assert.equal(result, null);
 });
+
+// ── BuddyBleTransport (issue #161) ───────────────────────────────────────────
+// The phone-pairing BLE transport has no Linux binding, so nothing registers
+// the claude.buddy channel and the renderer's invoke rejects with "No handler
+// registered", surfacing as an uncaught promise error during session startup.
+test('BuddyBleTransport_$_reportState is a no-op stub on the claude.buddy namespace', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride(
+    '$eipc_message$_61a9f65f-1ad1-4154-b2da-52d6d0694886_$_claude.buddy_$_BuddyBleTransport_$_reportState',
+    registry
+  );
+  assert.ok(handler, 'reportState must have a handler so the invoke resolves');
+  assert.equal(await handler({}, { state: 'advertising' }), null);
+});
+
+test('BuddyBleTransport_$_reportState registers proactively under claude.buddy only', () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const uuid = '11111111-2222-3333-4444-555555555555';
+  const handled = [];
+  proactivelyRegisterOverrides(
+    (channel) => { handled.push(channel); },
+    () => {},
+    registry,
+    uuid
+  );
+
+  const buddy = handled.filter(c => c.includes('BuddyBleTransport_$_reportState'));
+  assert.deepEqual(buddy, [
+    `$eipc_message$_${uuid}_$_claude.buddy_$_BuddyBleTransport_$_reportState`
+  ], 'reportState registers on claude.buddy and nowhere else');
+
+  // The namespace override must not leak: no other suffix gains claude.buddy.
+  const strayBuddy = handled.filter(c => c.includes('_$_claude.buddy_$_') && !c.includes('BuddyBleTransport'));
+  assert.deepEqual(strayBuddy, [], 'claude.buddy must not be added for unrelated suffixes');
+});
+
+// DeviceRegistry signs a session/device binding assertion. A stub answer would
+// forge a device-identity check the server relies on, so there must not be one:
+// the asar's own handler is left to fail honestly. See issue #161.
+test('DeviceRegistry has no override — a forged device binding is never stubbed', () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  for (const key of Object.keys(registry)) {
+    assert.ok(!key.includes('DeviceRegistry'), 'unexpected DeviceRegistry override: ' + key);
+  }
+  assert.equal(
+    matchOverride('$eipc_message$_abc_$_claude.web_$_DeviceRegistry_$_signCreateSessionBind', registry),
+    null,
+    'signCreateSessionBind must fall through to the asar handler'
+  );
+});

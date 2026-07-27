@@ -120,3 +120,162 @@ test('createSpaceFolder rejects a symlinked ancestor that escapes home (no mkdir
   assert.equal(result, null, 'symlinked-ancestor escape must be rejected');
   assert.ok(!fs.existsSync(path.join(escapeTarget, 'pwned')), 'nothing may be created at the escape target');
 });
+
+// ── Live onSpaceEvent emission ───────────────────────────────────────────────
+// Regression for "CoWork projects don't refresh until the desktop app is
+// restarted". Mutations persisted to spaces.json but the renderer was never
+// notified, so create/archive/delete/add-folder only appeared after a relaunch
+// (which re-runs getAllSpaces()). The store now calls an injected `emit` with
+// the shape the renderer's onSpaceEvent handler consumes:
+//   { type: 'created'|'updated'|'deleted', space }
+function setupWithEvents(t) {
+  const tempRoot = fs.mkdtempSync(path.join(os.homedir(), '.cowork-spaces-ev-'));
+  t.after(() => {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    delete global.__coworkPasswdHomedir;
+  });
+  const tempHome = path.join(tempRoot, 'home');
+  fs.mkdirSync(tempHome, { recursive: true });
+  global.__coworkPasswdHomedir = tempHome;
+  // discoverSpacesPath() writes under <localAgentRoot>/<account>/<org>/; the
+  // dirs must exist for writeSpaces() to resolve a path (createSpaceFolder,
+  // which the other tests use, never touches spaces.json so it didn't need it).
+  const localAgentRoot = path.join(tempHome, '.config', 'Claude', 'local-agent-mode-sessions');
+  fs.mkdirSync(path.join(localAgentRoot, 'account-1', 'org-1'), { recursive: true });
+  const events = [];
+  const store = createSpacesStore({
+    localAgentRoot,
+    isPathAllowed: () => true,
+    trace: () => {},
+    emit: (e) => events.push(e),
+  });
+  return { tempHome, store, events };
+}
+
+test('createSpace emits a "created" event with the new space', (t) => {
+  const { store, events } = setupWithEvents(t);
+  const space = store.createSpace(null, { name: 'Alpha' });
+  assert.ok(space && space.id);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, 'created');
+  assert.equal(events[0].space.id, space.id);
+  assert.equal(events[0].space.name, 'Alpha');
+});
+
+test('updateSpace emits "updated"; a miss emits nothing', (t) => {
+  const { store, events } = setupWithEvents(t);
+  const space = store.createSpace(null, { name: 'Alpha' });
+  events.length = 0;
+  const updated = store.updateSpace(null, space.id, { name: 'Beta' });
+  assert.equal(updated.name, 'Beta');
+  assert.deepEqual(events.map(e => e.type), ['updated']);
+  assert.equal(events[0].space.name, 'Beta');
+  events.length = 0;
+  assert.equal(store.updateSpace(null, 'no-such-id', { name: 'X' }), null);
+  assert.equal(events.length, 0);
+});
+
+test('deleteSpace emits "deleted" carrying the id; a miss emits nothing', (t) => {
+  const { store, events } = setupWithEvents(t);
+  const space = store.createSpace(null, { name: 'Alpha' });
+  events.length = 0;
+  assert.equal(store.deleteSpace(null, space.id), true);
+  assert.deepEqual(events.map(e => e.type), ['deleted']);
+  assert.equal(events[0].space.id, space.id);
+  events.length = 0;
+  assert.equal(store.deleteSpace(null, 'no-such-id'), false);
+  assert.equal(events.length, 0);
+});
+
+test('addFolderToSpace emits "updated" with the folder; a blocked path emits nothing', (t) => {
+  const { tempHome, store, events } = setupWithEvents(t);
+  const space = store.createSpace(null, { name: 'Alpha' });
+  const folder = path.join(tempHome, 'work');
+  fs.mkdirSync(folder, { recursive: true });
+  events.length = 0;
+  assert.ok(store.addFolderToSpace(null, space.id, folder));
+  assert.deepEqual(events.map(e => e.type), ['updated']);
+  assert.ok(events[0].space.folders.some(f => f.path === fs.realpathSync(folder)));
+  // Outside-home folder is rejected before any write — must not emit.
+  events.length = 0;
+  assert.equal(store.addFolderToSpace(null, space.id, '/etc'), null);
+  assert.equal(events.length, 0);
+});
+
+test('a throwing emit transport never fails or loses the mutation', (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.homedir(), '.cowork-spaces-ev2-'));
+  t.after(() => {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    delete global.__coworkPasswdHomedir;
+  });
+  const tempHome = path.join(tempRoot, 'home');
+  fs.mkdirSync(tempHome, { recursive: true });
+  global.__coworkPasswdHomedir = tempHome;
+  const localAgentRoot = path.join(tempHome, '.config', 'Claude', 'local-agent-mode-sessions');
+  fs.mkdirSync(path.join(localAgentRoot, 'account-1', 'org-1'), { recursive: true });
+  const store = createSpacesStore({
+    localAgentRoot,
+    isPathAllowed: () => true,
+    trace: () => {},
+    emit: () => { throw new Error('renderer gone'); },
+  });
+  const space = store.createSpace(null, { name: 'Alpha' });
+  assert.ok(space && space.id, 'mutation must persist even when emit throws');
+  assert.equal(store.getSpace(null, space.id).name, 'Alpha');
+});
+
+// ── File-op contract: asar 1.22209.x switched (path) -> (spaceId, path) ───────
+// The renderer now prepends a spaceId, moving the real path to argument 1.
+// The stub must accept BOTH shapes (new build + rollback) or folder browsing
+// and file reads silently return empty (BLOCKED on the UUID-as-path).
+test('listFolderContents/readFileContents accept both (spaceId, path) and (path)', (t) => {
+  const { tempHome, store } = setupWithEvents(t);
+  const space = store.createSpace(null, { name: 'S' });
+  const folder = path.join(tempHome, 'proj');
+  fs.mkdirSync(folder, { recursive: true });
+  fs.writeFileSync(path.join(folder, 'a.txt'), 'hello');
+  store.addFolderToSpace(null, space.id, folder);
+  const rf = fs.realpathSync(folder);
+  const file = path.join(rf, 'a.txt');
+
+  // New (spaceId, path)
+  assert.ok(store.listFolderContents(null, space.id, rf).some(e => e.name === 'a.txt'),
+    'new (spaceId, path) must list contents');
+  assert.equal(store.readFileContents(null, space.id, file), 'hello',
+    'new (spaceId, path) must read file');
+
+  // Old (path) — rollback safety
+  assert.ok(store.listFolderContents(null, rf).some(e => e.name === 'a.txt'),
+    'old (path) must still list contents');
+  assert.equal(store.readFileContents(null, file), 'hello',
+    'old (path) must still read file');
+
+  // spaceId alone (no path arg) is not a path -> rejected, no crash
+  assert.deepEqual(store.listFolderContents(null, space.id), []);
+});
+
+// ── Auto-memory dir browsing (asar 1.22209.x calls listFolderContents on it) ──
+// The CoWork UI lists a space's internal memory dir (localAgentRoot/.../spaces/
+// <id>/memory), which isn't a registered project folder. Allow that subtree for
+// read only — the rest of localAgentRoot must stay off-limits.
+test('auto-memory dir is browsable/readable; rest of localAgentRoot is not', (t) => {
+  const { store } = setupWithEvents(t);
+  const space = store.createSpace(null, { name: 'M' });
+  const memDir = store.getAutoMemoryDir(null, space.id);
+  assert.ok(memDir && fs.existsSync(memDir), 'getAutoMemoryDir must create the dir');
+  fs.writeFileSync(path.join(memDir, 'note.md'), '# note');
+
+  assert.ok(store.listFolderContents(null, space.id, memDir).some(e => e.name === 'note.md'),
+    'memory dir must be listable');
+  assert.equal(store.readFileContents(null, space.id, path.join(memDir, 'note.md')), '# note',
+    'memory file must be readable');
+
+  // The org dir (holds spaces.json + all session data) must NOT be browsable.
+  const orgDir = path.dirname(path.dirname(memDir)); // .../spaces/<id> -> .../spaces -> guard below
+  const spacesParent = path.dirname(path.dirname(path.dirname(memDir))); // .../<org>
+  assert.deepEqual(store.listFolderContents(null, space.id, spacesParent), [],
+    'localAgentRoot org dir must stay off-limits');
+  // The space dir above /memory is also not browsable (only the memory subtree).
+  assert.deepEqual(store.listFolderContents(null, space.id, orgDir), [],
+    'the spaces/<id> dir (above memory) must not be browsable');
+});

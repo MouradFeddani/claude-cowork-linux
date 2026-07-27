@@ -431,3 +431,92 @@ test('wrapAliasedFileSystemHandler preserves structured relink-required errors f
     }
   );
 });
+
+// ── CoworkSpaces live-event broadcast ────────────────────────────────────────
+// Space payloads carry space names and registered folder paths. The broadcast
+// must reach app UI renderers only — <webview> contents host embedded, non-app
+// content and must never receive them.
+function loadSpaceEventEmitter(electronStub) {
+  const wrapperPath = path.join(__dirname, '..', '..', '..', 'stubs', 'frame-fix', 'frame-fix-wrapper.js');
+  const source = fs.readFileSync(wrapperPath, 'utf8');
+  const start = source.indexOf('const _coworkEipcUuids');
+  const end = source.indexOf('// Expose so ipc_overrides.js reuses the same transport');
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error('Failed to locate CoworkSpaces live-event block in ' + wrapperPath);
+  }
+  const context = {
+    require: (id) => {
+      if (id === 'electron') return electronStub;
+      throw new Error('Unexpected require: ' + id);
+    },
+    module: { exports: {} },
+  };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  return context;
+}
+
+function fakeContents(type, sent, opts) {
+  return {
+    getType: () => type,
+    isDestroyed: () => Boolean(opts && opts.destroyed),
+    send: (channel, payload) => sent.push({ type, channel, payload }),
+  };
+}
+
+test('space events go to app renderers only, never to webviews', () => {
+  const sent = [];
+  const all = [
+    fakeContents('window', sent),
+    fakeContents('webview', sent),
+    fakeContents('browserView', sent),
+    fakeContents('remote', sent),
+    fakeContents('window', sent, { destroyed: true }),
+  ];
+  const ctx = loadSpaceEventEmitter({ webContents: { getAllWebContents: () => all } });
+
+  ctx.emitCoworkSpaceEvent({ type: 'created', space: { id: 's1', name: 'Alpha' } });
+
+  assert.deepEqual(sent.map(s => s.type), ['window', 'browserView'],
+    'only live window/browserView contents may receive space events');
+  for (const s of sent) {
+    assert.ok(s.channel.endsWith('_$_claude.web_$_CoworkSpaces_$_onSpaceEvent'), 'onSpaceEvent channel');
+    assert.equal(s.payload.space.name, 'Alpha');
+  }
+});
+
+test('contents with no determinable type are skipped (fail-closed)', () => {
+  const sent = [];
+  const all = [
+    { isDestroyed: () => false, send: (c, p) => sent.push({ c, p }) },            // no getType
+    { getType: () => { throw new Error('gone'); }, isDestroyed: () => false, send: (c, p) => sent.push({ c, p }) },
+  ];
+  const ctx = loadSpaceEventEmitter({ webContents: { getAllWebContents: () => all } });
+  ctx.emitCoworkSpaceEvent({ type: 'updated', space: { id: 's1' } });
+  assert.equal(sent.length, 0);
+});
+
+test('a new CoworkSpaces eIPC uuid is picked up; non-Cowork channels are ignored', () => {
+  const sent = [];
+  const all = [fakeContents('window', sent)];
+  const ctx = loadSpaceEventEmitter({ webContents: { getAllWebContents: () => all } });
+
+  ctx.noteCoworkEipcUuid('$eipc_message$_960045f6-0000-0000-0000-000000000000_$_claude.web_$_CoworkSpaces_$_getAllSpaces',
+    '960045f6-0000-0000-0000-000000000000');
+  ctx.noteCoworkEipcUuid('$eipc_message$_deadbeef-0000-0000-0000-000000000000_$_claude.web_$_SomethingElse_$_x',
+    'deadbeef-0000-0000-0000-000000000000');
+
+  ctx.emitCoworkSpaceEvent({ type: 'deleted', space: { id: 's1' } });
+
+  const uuids = sent.map(s => s.channel.split('_$_')[0].replace('$eipc_message$_', ''));
+  assert.ok(uuids.includes('960045f6-0000-0000-0000-000000000000'), 'observed CoworkSpaces uuid is used');
+  assert.ok(!uuids.includes('deadbeef-0000-0000-0000-000000000000'), 'non-CoworkSpaces uuid is not added');
+});
+
+test('a non-object payload is never broadcast', () => {
+  const sent = [];
+  const all = [fakeContents('window', sent)];
+  const ctx = loadSpaceEventEmitter({ webContents: { getAllWebContents: () => all } });
+  for (const bad of [null, undefined, 'x', 42]) ctx.emitCoworkSpaceEvent(bad);
+  assert.equal(sent.length, 0);
+});

@@ -95,6 +95,56 @@ const { createAutoPermissionsCap } = require('./cowork/auto_permissions_cap.js')
 const { createBridgeCanary } = require('./cowork/bridge_canary.js');
 const { redactHomeDir } = require('./cowork/credential_classifier.js');
 
+// ── CoworkSpaces live events ────────────────────────────────────────────────
+// The renderer subscribes to space mutations via ipcRenderer.on(<channel>) and
+// patches its UI in place (upsert on created/updated, drop on deleted). On
+// macOS the native Swift module pushes these events; on Linux the spaces store
+// had no transport, so create / archive / delete / add-folder only became
+// visible after an app restart (which re-runs getAllSpaces()). We push the
+// event to every live webContents on the onSpaceEvent channel for each EIPC
+// UUID observed on a CoworkSpaces channel at handler-registration time. The set
+// is seeded with the UUID shipped in the tested asar so the cold path (a
+// mutation before any handler registered) still reaches a listening renderer;
+// sending on a channel nobody listens to is a harmless no-op.
+const _coworkEipcUuids = new Set(['f03aa98e-d1a9-4267-bc94-7de792a6d4be']);
+
+function noteCoworkEipcUuid(channel, uuid) {
+  if (uuid && typeof channel === 'string' && channel.indexOf('CoworkSpaces') >= 0) {
+    _coworkEipcUuids.add(uuid);
+  }
+}
+
+// Space payloads carry space names and registered folder paths, so the event
+// goes to app UI only. <webview> contents host embedded, non-app content
+// (artifact previews and the like) and must never receive it; anything whose
+// type we can't determine is treated as a webview and skipped (fail-closed).
+function isAppRenderer(contents) {
+  if (typeof contents.getType !== 'function') return false;
+  let type;
+  try { type = contents.getType(); } catch (_) { return false; }
+  return type === 'window' || type === 'browserView';
+}
+
+function emitCoworkSpaceEvent(payload) {
+  if (!payload || typeof payload !== 'object') return;
+  let list;
+  try {
+    list = require('electron').webContents.getAllWebContents();
+  } catch (_) { return; }
+  for (const contents of list) {
+    if (!contents) continue;
+    if (typeof contents.isDestroyed === 'function' && contents.isDestroyed()) continue;
+    if (!isAppRenderer(contents)) continue;
+    for (const uuid of _coworkEipcUuids) {
+      const channel = '$eipc_message$_' + uuid + '_$_claude.web_$_CoworkSpaces_$_onSpaceEvent';
+      try { contents.send(channel, payload); } catch (_) {}
+    }
+  }
+}
+// Expose so ipc_overrides.js reuses the same transport when it (rather than the
+// early block below) is the site that constructs the shared spaces store.
+global.__coworkEmitSpaceEvent = emitCoworkSpaceEvent;
+
 // Single cap instance for the process. Closure-private state lives inside
 // the factory; we just keep the wrapHandler reference. The cap is one of
 // the "wrapper-side rails" that bounds the manual permission flow which
@@ -655,6 +705,7 @@ try {
     ),
     isPathAllowed: _earlyIsPathAllowed,
     trace: (msg) => console.log(msg),
+    emit: emitCoworkSpaceEvent,
   });
   global.__coworkSpacesStore = _spacesStore;
 
@@ -675,9 +726,9 @@ try {
     addLinkToSpace: async (_e, id, l) => _spacesStore.addLinkToSpace(_e, id, l),
     removeLinkFromSpace: async (_e, id, l) => _spacesStore.removeLinkFromSpace(_e, id, l),
     getAutoMemoryDir: async (_e, id) => _spacesStore.getAutoMemoryDir(_e, id),
-    listFolderContents: async (_e, p) => _spacesStore.listFolderContents(_e, p),
-    readFileContents: async (_e, p) => _spacesStore.readFileContents(_e, p),
-    openFile: async (_e, p) => _spacesStore.openFile(_e, p),
+    listFolderContents: async (_e, id, p) => _spacesStore.listFolderContents(_e, id, p),
+    readFileContents: async (_e, id, p) => _spacesStore.readFileContents(_e, id, p),
+    openFile: async (_e, id, p) => _spacesStore.openFile(_e, id, p),
     copyFilesToSpaceFolder: async (_e, id, f) => _spacesStore.copyFilesToSpaceFolder(_e, id, f),
     createSpaceFolder: async (_e, id, n) => _spacesStore.createSpaceFolder(_e, id, n),
     classifySessions: async (_e, s) => _spacesStore.classifySessions(_e, s),
@@ -1456,6 +1507,7 @@ Module.prototype.require = function(id) {
         // catch them. Proactive registration on ipcMain provides a fallback.
         const uuid = extractEipcUuid(channel);
         if (uuid) {
+          noteCoworkEipcUuid(channel, uuid);
           proactivelyRegisterOverrides(originalHandle, originalRemoveHandler, ipcOverrides, uuid);
         }
 
@@ -1635,6 +1687,7 @@ Module.prototype.require = function(id) {
           // handlers the asar never registers (ComputerUseTcc, CoworkSpaces).
           const uuid = extractEipcUuid(channel);
           if (uuid) {
+            noteCoworkEipcUuid(channel, uuid);
             proactivelyRegisterOverrides(originalHandle, originalRemoveHandler, ipcOverrides, uuid);
           }
 
