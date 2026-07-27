@@ -11,9 +11,9 @@ compatibility, fix bugs, or extend distro support are very welcome.
 
 ## Orientation
 
-The layer stubs macOS-native modules so an unmodified Claude Desktop runs on Linux.
-Almost every bug lives in one of a few chains, so it's worth knowing which one you're in
-before you start:
+This project is a compatibility layer: it stubs macOS-native modules so an unmodified
+Claude Desktop runs on Linux. Almost every bug lives in one of a few chains, so it's
+worth knowing which one you're in before you start:
 
 - **[README "Architecture"](README.md#-architecture)** -- how the stubs, the frame-fix
   wrapper, and the repacked asar fit together, plus **path translation** and **mount
