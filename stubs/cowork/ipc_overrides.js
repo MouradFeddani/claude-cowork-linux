@@ -351,6 +351,24 @@ function createOverrideRegistry(getProcessState) {
     'ComputerUseTcc_$_getCurrentSessionGrants': async () => ([]),
     'ComputerUseTcc_$_revokeGrant': async () => {},
 
+    // BuddyBleTransport — the phone-pairing BLE transport is macOS-only and has
+    // no Linux binding, so nothing registers this channel. The renderer invokes
+    // reportState during session startup; with no handler the invoke rejects and
+    // surfaces as "Uncaught (in promise) ... No handler registered" (issue #161).
+    // Accept the state report and drop it: there is no transport to report to.
+    // This is a pure no-op — it grants nothing and answers no capability query.
+    'BuddyBleTransport_$_reportState': async () => {
+      vlog('[ipc:BuddyBleTransport.reportState] no BLE transport on Linux (no-op)');
+      return null;
+    },
+
+    // DeviceRegistry — deliberately NOT overridden. signCreateSessionBind asks
+    // the app to sign a session/device binding assertion; the asar's own handler
+    // throws "device not registered (no row-PK for this account)" when the
+    // account has no registered device. Stubbing a synthetic signature or a
+    // fake "registered" answer would forge a device-identity check that the
+    // server relies on, so the failure is left to surface honestly. See #161.
+
     // ClaudeVM — report VM as running and ready (webapp expects string "ready")
     'ClaudeVM_$_getRunningStatus': async () => CLAUDE_VM_RUNNING_STATUS,
     'ClaudeVM_$_getDownloadStatus': async () => CLAUDE_VM_DOWNLOAD_STATUS,
@@ -653,9 +671,20 @@ const PROACTIVE_ONLY_SUFFIXES = new Set([
   'Startup_$_setStartupOnLoginEnabled',
   'Startup_$_isMenuBarEnabled',
   'Startup_$_setMenuBarEnabled',
+  // BuddyBleTransport — proactive because nothing on Linux ever registers the
+  // claude.buddy channel, so there is no registration to intercept (#161).
+  'BuddyBleTransport_$_reportState',
 ]);
 
 const EIPC_NAMESPACES = ['claude.web', 'claude.hybrid', 'claude.settings'];
+
+// Suffixes that live under a namespace outside EIPC_NAMESPACES. Kept as a
+// per-suffix override rather than widening EIPC_NAMESPACES, so adding one
+// namespace doesn't also register every other proactive suffix under it.
+const PROACTIVE_NAMESPACE_OVERRIDES = {
+  'BuddyBleTransport_$_reportState': ['claude.buddy'],
+};
+
 const _registeredUuids = new Set();
 const _proactiveChannels = new Set();
 
@@ -671,7 +700,7 @@ function proactivelyRegisterOverrides(ipcMainHandle, ipcMainRemoveHandler, regis
   for (const suffix of PROACTIVE_ONLY_SUFFIXES) {
     const handler = registry[suffix];
     if (!handler) continue;
-    for (const ns of EIPC_NAMESPACES) {
+    for (const ns of (PROACTIVE_NAMESPACE_OVERRIDES[suffix] || EIPC_NAMESPACES)) {
       const fullChannel = `$eipc_message$_${uuid}_$_${ns}_$_${suffix}`;
       try {
         try { ipcMainRemoveHandler(fullChannel); } catch (_) {}
