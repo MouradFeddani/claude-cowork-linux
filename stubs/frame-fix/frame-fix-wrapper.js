@@ -114,6 +114,17 @@ function noteCoworkEipcUuid(channel, uuid) {
   }
 }
 
+// Space payloads carry space names and registered folder paths, so the event
+// goes to app UI only. <webview> contents host embedded, non-app content
+// (artifact previews and the like) and must never receive it; anything whose
+// type we can't determine is treated as a webview and skipped (fail-closed).
+function isAppRenderer(contents) {
+  if (typeof contents.getType !== 'function') return false;
+  let type;
+  try { type = contents.getType(); } catch (_) { return false; }
+  return type === 'window' || type === 'browserView';
+}
+
 function emitCoworkSpaceEvent(payload) {
   if (!payload || typeof payload !== 'object') return;
   let list;
@@ -123,6 +134,7 @@ function emitCoworkSpaceEvent(payload) {
   for (const contents of list) {
     if (!contents) continue;
     if (typeof contents.isDestroyed === 'function' && contents.isDestroyed()) continue;
+    if (!isAppRenderer(contents)) continue;
     for (const uuid of _coworkEipcUuids) {
       const channel = '$eipc_message$_' + uuid + '_$_claude.web_$_CoworkSpaces_$_onSpaceEvent';
       try { contents.send(channel, payload); } catch (_) {}

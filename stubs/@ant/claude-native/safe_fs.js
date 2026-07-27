@@ -91,11 +91,77 @@ async function renameBeneath(root, fromSegments, toSegments) {
   );
 }
 
+// Node string open-flags -> numeric, so we can OR in O_NOFOLLOW. Mirrors the
+// table in Node's fs docs; anything unrecognized is rejected rather than
+// silently opened without the no-follow bit.
+const FLAG_MAP = {
+  r: fs.constants.O_RDONLY,
+  'r+': fs.constants.O_RDWR,
+  rs: fs.constants.O_RDONLY | fs.constants.O_SYNC,
+  'sr': fs.constants.O_RDONLY | fs.constants.O_SYNC,
+  'rs+': fs.constants.O_RDWR | fs.constants.O_SYNC,
+  'sr+': fs.constants.O_RDWR | fs.constants.O_SYNC,
+  w: fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC,
+  wx: fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
+  'xw': fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
+  'w+': fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_TRUNC,
+  'wx+': fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_EXCL,
+  'xw+': fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_EXCL,
+  a: fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND,
+  ax: fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_EXCL,
+  'xa': fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_EXCL,
+  as: fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_SYNC,
+  'sa': fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_SYNC,
+  'a+': fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_APPEND,
+  'ax+': fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_EXCL,
+  'xa+': fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_EXCL,
+  'as+': fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_SYNC,
+  'sa+': fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_SYNC,
+};
+
+function numericFlags(flags) {
+  if (flags == null) return FLAG_MAP.r;
+  if (typeof flags === 'number') return flags;
+  if (typeof flags === 'string' && Object.prototype.hasOwnProperty.call(FLAG_MAP, flags)) {
+    return FLAG_MAP[flags];
+  }
+  throw denied('safe-fs: unsupported open flags: ' + String(flags));
+}
+
 async function openBeneath(root, segments, flags, mode) {
   // Returns a Node fs.promises FileHandle — read(buf,off,len,pos) / write /
   // stat / close / sync / truncate — the exact surface the caller uses. Mode
   // defaults to 0o600 to match the native call's `?? 384`.
-  return fs.promises.open(resolveBeneath(root, segments), flags, mode == null ? 0o600 : mode);
+  //
+  // O_NOFOLLOW on the final component. resolveBeneath's ancestor realpath
+  // cannot see through a *dangling* symlink: existsSync() is false for a
+  // broken link, so the walk skips past it to the (legitimate) parent and the
+  // check passes — then open('w') follows the link and creates the file at its
+  // target, outside the root. O_NOFOLLOW closes that atomically: the kernel
+  // fails with ELOOP instead of following a final-component symlink.
+  const base = rootPathOf(root);
+  const target = resolveBeneath(root, segments);
+  const nflags = numericFlags(flags);
+  const fmode = mode == null ? 0o600 : mode;
+  try {
+    return await fs.promises.open(target, nflags | fs.constants.O_NOFOLLOW, fmode);
+  } catch (e) {
+    if (!e || e.code !== 'ELOOP') throw e;
+    // The final component IS a symlink. Native RESOLVE_BENEATH permits links
+    // that stay inside the root, so mirror that: resolve it and re-open the
+    // realpath (which by definition has no symlink at its final component).
+    // A dangling link cannot be resolved -> denied, which is the escape above.
+    let real;
+    try {
+      real = await fs.promises.realpath(target);
+    } catch (_) {
+      throw denied('safe-fs: symlinked path escapes root');
+    }
+    if (real !== base && !real.startsWith(base + path.sep)) {
+      throw denied('safe-fs: symlinked path escapes root');
+    }
+    return fs.promises.open(real, nflags | fs.constants.O_NOFOLLOW, fmode);
+  }
 }
 
 module.exports = {

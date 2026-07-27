@@ -80,3 +80,53 @@ test('containment is fail-closed: separators, dotdot, and symlink escape are den
   await denied(() => safeFs.openBeneath(h, ['link', 'pwned'], 'w'));
   assert.ok(!fs.existsSync(path.join(outside, 'pwned')), 'nothing may be written outside the root');
 });
+
+// Regression: a DANGLING symlink at the final component escaped the root.
+// existsSync() is false for a broken link, so the nearest-existing-ancestor
+// realpath walk skipped past it to the legitimate parent and the check passed —
+// then open('w') followed the link and created the file at its target outside
+// the root. O_NOFOLLOW on the final component closes it.
+test('a dangling symlink at the final component cannot escape the root', async (t) => {
+  const root = tmpRoot(t);
+  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'safefs-dangle-')));
+  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  const h = await safeFs.openRootDir(root);
+
+  // root/dangle -> outside/pwned, which does NOT exist yet.
+  fs.symlinkSync(path.join(outside, 'pwned'), path.join(root, 'dangle'));
+  await assert.rejects(() => safeFs.openBeneath(h, ['dangle'], 'w'), (e) => e.code === 'EACCES');
+  assert.ok(!fs.existsSync(path.join(outside, 'pwned')),
+    'a write through a dangling symlink must not create a file outside the root');
+
+  // Same for the read-write and append creation modes.
+  for (const flag of ['w+', 'a', 'a+']) {
+    await assert.rejects(() => safeFs.openBeneath(h, ['dangle'], flag), (e) => e.code === 'EACCES');
+  }
+  assert.ok(!fs.existsSync(path.join(outside, 'pwned')), 'still nothing outside the root');
+});
+
+// Native RESOLVE_BENEATH permits symlinks that stay inside the root, so a
+// link to a sibling file beneath the root must keep working.
+test('a symlink that stays inside the root is still usable', async (t) => {
+  const root = tmpRoot(t);
+  const h = await safeFs.openRootDir(root);
+
+  fs.writeFileSync(path.join(root, 'real.txt'), 'inside');
+  fs.symlinkSync(path.join(root, 'real.txt'), path.join(root, 'alias.txt'));
+
+  const fh = await safeFs.openBeneath(h, ['alias.txt'], 'r');
+  const buf = Buffer.alloc(6);
+  await fh.read(buf, 0, 6, 0);
+  await fh.close();
+  assert.equal(buf.toString('utf8'), 'inside');
+});
+
+test('unsupported open flags are rejected rather than opened without O_NOFOLLOW', async (t) => {
+  const root = tmpRoot(t);
+  const h = await safeFs.openRootDir(root);
+  await assert.rejects(() => safeFs.openBeneath(h, ['x.txt'], 'bogus'), (e) => e.code === 'EACCES');
+  // Numeric flags pass through (the caller may hand us raw O_* bits).
+  const fh = await safeFs.openBeneath(h, ['n.txt'], fs.constants.O_CREAT | fs.constants.O_RDWR);
+  await fh.close();
+  assert.ok(fs.existsSync(path.join(root, 'n.txt')));
+});
