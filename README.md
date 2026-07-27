@@ -351,7 +351,6 @@ claude-cowork-linux/
 ├── docs/
 │   ├── FAQ.md                         # Detailed troubleshooting guide
 │   ├── extensions.md                  # MCP and Chrome Extension integration overview
-│   ├── known-issues.md                # Safe Storage encryption, keyring setup
 │   └── safestorage-tokens.md          # How to persist tokens across restarts
 ├── config/
 │   └── hyprland/claude.conf           # Optional: Hyprland window rules
@@ -363,7 +362,8 @@ claude-cowork-linux/
 ├── PKGBUILD                           # Arch Linux AUR package definition
 ├── docs/releases/                     # Per-version release notes
 ├── docs/OAUTH-COMPLIANCE.md           # OAuth token handling audit
-├── CLAUDE.md                          # Project guide and critical paths
+├── COMPAT.md                          # Tested asar versions and known breakage
+├── CONTRIBUTING.md                    # Orientation, conventions, security-sensitive areas
 ├── README.md                          # This file
 └── LICENSE
 ```

@@ -7,8 +7,51 @@ compatibility, fix bugs, or extend distro support are very welcome.
 
 - **Check open issues** -- someone may already be working on it
 - **Open an issue first** for non-trivial changes so we can align before you invest time
-- **Read [CLAUDE.md](CLAUDE.md)** -- it documents the architecture, critical path chains,
-  and things that are easy to break (especially auth and path translation)
+- **Get oriented** -- see "Orientation" below for what to read before touching the stubs
+
+## Orientation
+
+The layer stubs macOS-native modules so an unmodified Claude Desktop runs on Linux.
+Almost every bug lives in one of a few chains, so it's worth knowing which one you're in
+before you start:
+
+- **[README "Architecture"](README.md#-architecture)** -- how the stubs, the frame-fix
+  wrapper, and the repacked asar fit together, plus **path translation** and **mount
+  symlinks**, which are the two easiest things to break.
+- **[README "How It Works"](README.md#-how-it-works)** -- startup sequence, from launcher
+  through asar patching to a live Cowork session.
+- **[README "Project Structure"](README.md#-project-structure)** -- what each file does.
+- **[docs/OAUTH-COMPLIANCE.md](docs/OAUTH-COMPLIANCE.md)** -- the auth chain. Read this
+  before any change that touches env vars reaching a spawned process.
+- **[COMPAT.md](COMPAT.md)** -- which asar versions are known-good, and which contract
+  changes landed in which build. Bundle-version-specific breakage usually starts here.
+
+Two things that are easy to get wrong and are worth calling out up front:
+
+- **IPC contracts shift between asar builds.** Handler signatures and channel namespaces
+  change without notice. Prefer stubs that accept both the old and new shape so a user
+  rolling back an update isn't broken -- see `pickPathArg` in `stubs/cowork/spaces_store.js`.
+- **Path containment is not the same as path normalization.** Anything resolving a
+  renderer-supplied path must realpath it and prove containment before use, and must
+  fail closed on anything it can't prove -- including symlinks that don't resolve.
+
+## Agent-Assisted Contributions
+
+Contributions written with an AI coding agent are welcome, with two conditions:
+
+1. **You have read and understood the diff**, and can explain why each change is there.
+   Review load is the bottleneck in this project, not typing.
+2. **No agent instruction files in the repo.** `CLAUDE.md`, `AGENTS.md`, `.cursorrules`,
+   `.github/copilot-instructions.md` and equivalents are out of scope, and a PR adding
+   one will be asked to remove it.
+
+The second point is a security boundary, not a style preference. Agents read those files
+automatically and treat them with the authority of an instruction from the person running
+them -- so a file in a public repo becomes a way to steer any contributor's or maintainer's
+agent, and it's editable by anyone who can open a PR. Keeping the repo free of them means
+a checkout carries no instructions to a reader that a human wouldn't see in review.
+Documentation for humans belongs in `README.md`, `docs/`, or here. Keep your own agent
+config outside the repo (`~/.claude/`, or untracked and gitignored locally).
 
 ## What's Most Useful
 
