@@ -112,7 +112,9 @@ const CREDENTIAL_EXEMPT_KEYS = new Set(['CLAUDE_CODE_OAUTH_TOKEN']);
 - The token is forwarded only to the official, unmodified Claude Code CLI binary
 - No third-party application receives the OAuth token
 - `ANTHROPIC_AUTH_TOKEN` injection is explicitly blocked (it bypasses OAuth handling and
-  causes 401 errors — see CLAUDE.md)
+  causes 401 errors — see [docs/FAQ.md](FAQ.md#login-and-auth) under "OAuth 401 errors";
+  the allowlist that omits it
+  is `ENV_ALLOWLIST` in `stubs/cowork/env_filter.js`)
 
 ---
 
