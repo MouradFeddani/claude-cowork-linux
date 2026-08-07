@@ -1277,8 +1277,12 @@ doctor() {
     if [[ -d "$app_dir/.vite/build" ]]; then
         log_success "Extracted app: $app_dir"
         ok=$((ok + 1))
-        # Check cowork patch
-        if grep -q 'cowork-patched' "$app_dir/.vite/build/index.js" 2>/dev/null; then
+        # Check cowork patch. On split-entry builds the platform gate — and so
+        # the marker — lives in a chunk, not in the index.js shim, so grepping
+        # index.js alone always reported "not applied" on a correctly patched
+        # install and sent users into a pointless reinstall.
+        if grep -rqs --include='index.js' --include='index*.chunk-*.js' \
+            'cowork-patched' "$app_dir/.vite/build" 2>/dev/null; then
             log_success "Cowork patch: applied"
             ok=$((ok + 1))
         else
