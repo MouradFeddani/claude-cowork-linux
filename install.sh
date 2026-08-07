@@ -25,8 +25,11 @@ set -euo pipefail
 # ============================================================
 
 VERSION="5.1.0"
-REPO_URL="https://github.com/johnzfitch/claude-cowork-linux.git"
-INSTALL_DIR="$HOME/.local/share/claude-desktop"
+# Overridable so a fork/branch (or a local checkout) can be installed and tested
+# without editing this script. CLAUDE_REPO_REF is passed to `git clone --branch`.
+REPO_URL="${CLAUDE_REPO_URL:-https://github.com/johnzfitch/claude-cowork-linux.git}"
+REPO_REF="${CLAUDE_REPO_REF:-}"
+INSTALL_DIR="${CLAUDE_INSTALL_DIR:-$HOME/.local/share/claude-desktop}"
 INSTALL_FORCE=0
 
 # Minimum expected archive size (100MB) — applies to both DMG and ZIP
@@ -280,7 +283,13 @@ setup_repo() {
         fi
         log_info "Cloning claude-cowork-linux to $INSTALL_DIR..."
         mkdir -p "$(dirname "$INSTALL_DIR")"
-        git clone "$REPO_URL" "$INSTALL_DIR" || die "Failed to clone repository"
+        if [[ -n "$REPO_REF" ]]; then
+            log_info "Using ref: $REPO_REF ($REPO_URL)"
+            git clone --branch "$REPO_REF" "$REPO_URL" "$INSTALL_DIR" \
+                || die "Failed to clone repository at ref $REPO_REF"
+        else
+            git clone "$REPO_URL" "$INSTALL_DIR" || die "Failed to clone repository"
+        fi
         log_success "Repository cloned"
     fi
 }
