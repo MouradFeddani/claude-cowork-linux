@@ -180,7 +180,7 @@ JSEOF
     while IFS= read -r _chunk; do
         [ -n "$_chunk" ] && [ -f "$_build_dir/$_chunk" ] \
             && _index_targets+=("$_build_dir/$_chunk")
-    done < <(grep -oE 'index\.chunk-[A-Za-z0-9_-]+\.js' "$_indexjs" | sort -u)
+    done < <(grep -oE 'index[0-9]*\.chunk-[A-Za-z0-9_-]+\.js' "$_indexjs" | sort -u)
 
     # patch_index <log msg> <grep -E guard> <sed -E script>
     # Runs the sed against every main-process code file matching the guard; logs
@@ -203,18 +203,18 @@ JSEOF
 
     # Strip macOS titlebar opts (Vite ESM bypasses wrapper's require-Proxy).
     patch_index "Stripping macOS titlebar options (main window)..." \
-        'titleBarStyle:"hidden",titleBarOverlay:[A-Za-z0-9_$]+,trafficLightPosition:[A-Za-z0-9_$]+,' \
-        's/titleBarStyle:"hidden",titleBarOverlay:[A-Za-z0-9_$]+,trafficLightPosition:[A-Za-z0-9_$]+,//g'
+        'titleBarStyle:["`]hidden["`],titleBarOverlay:[A-Za-z0-9_$!.]+,trafficLightPosition:[A-Za-z0-9_$!.]+,' \
+        's/titleBarStyle:["`]hidden["`],titleBarOverlay:[A-Za-z0-9_$!.]+,trafficLightPosition:[A-Za-z0-9_$!.]+,//g'
     patch_index "Stripping macOS titlebar options (about window)..." \
-        'titleBarStyle:"hiddenInset",autoHideMenuBar:!0,skipTaskbar:!0' \
-        's/titleBarStyle:"hiddenInset",autoHideMenuBar:!0,skipTaskbar:!0/autoHideMenuBar:!0/g'
+        'titleBarStyle:["`]hiddenInset["`],autoHideMenuBar:!0,skipTaskbar:!0' \
+        's/titleBarStyle:["`]hiddenInset["`],autoHideMenuBar:!0,skipTaskbar:!0/autoHideMenuBar:!0/g'
 
     # Drop isPackaged check on file:// preloads (else renderer shell never loads).
     # The protocol/app identifiers are minified and rotate per build, so match
     # with [A-Za-z0-9_$]+ rather than the old hardcoded e./Ee. names.
     patch_index "Patching origin validation for file:// preloads..." \
-        '[A-Za-z0-9_$]+\.protocol==="file:"&&[A-Za-z0-9_$]+\.app\.isPackaged===!0' \
-        's/([A-Za-z0-9_$]+)\.protocol==="file:"&&[A-Za-z0-9_$]+\.app\.isPackaged===!0/\1.protocol==="file:"/g'
+        '[A-Za-z0-9_$]+\.protocol===["`]file:["`]&&[A-Za-z0-9_$.]+\.app\.isPackaged===!0' \
+        's/([A-Za-z0-9_$]+)\.protocol===["`]file:["`]&&[A-Za-z0-9_$.]+\.app\.isPackaged===!0/\1.protocol==="file:"/g'
 
     # Add linux branch to getHostPlatform() (without this, the minified
     # platform switch throws "Unsupported platform: linux-x64" and the
@@ -273,7 +273,7 @@ JSEOF
         fi
     done
     if [ -z "$_any_patched" ]; then
-        echo "ERROR: cowork platform gate not found in index.js or any index.chunk-*.js" >&2
+        echo "ERROR: cowork platform gate not found in index.js or any index*.chunk-*.js" >&2
         echo "       Claude Desktop's bundle layout may have changed; Cowork would not be enabled." >&2
         echo "       enable-cowork.py output follows:" >&2
         printf '%s' "$_miss_log" >&2

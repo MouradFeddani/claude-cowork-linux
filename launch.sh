@@ -126,7 +126,8 @@ fi
 # ── Locate the main-process code file(s) ────────────────────────────────────
 # Vite compiles the main process into .vite/build/. Newer Claude Desktop builds
 # emit index.js as a thin entry shim that require()s the real code from an
-# index.chunk-<hash>.js file (the <hash> changes every build); older builds keep
+# index.chunk-<hash>.js file (the <hash> changes every build, and 1.26832.0 adds a
+# parallel index2.chunk-<hash>.js series that holds the Cowork gate); older builds keep
 # everything in index.js. The patches below must run against whichever file
 # actually holds the code, so collect index.js plus every chunk it require()s.
 # Applying each grep-guarded patch across all of them is safe: a file that lacks
@@ -138,7 +139,7 @@ if [ -f "$_BUILD_DIR/index.js" ]; then
   INDEX_TARGETS+=("$_BUILD_DIR/index.js")
   while IFS= read -r _chunk; do
     [ -n "$_chunk" ] && [ -f "$_BUILD_DIR/$_chunk" ] && INDEX_TARGETS+=("$_BUILD_DIR/$_chunk")
-  done < <(grep -oE 'index\.chunk-[A-Za-z0-9_-]+\.js' "$_BUILD_DIR/index.js" | sort -u)
+  done < <(grep -oE 'index[0-9]*\.chunk-[A-Za-z0-9_-]+\.js' "$_BUILD_DIR/index.js" | sort -u)
 fi
 
 # patch_index "<log message>" "<grep -E guard>" "<sed -E script>"
@@ -159,11 +160,11 @@ patch_index() {
 # Fix window decorations: remove macOS-specific titlebar options from the windows.
 # The Vite bundle bypasses the frame-fix-wrapper's require interception, so we patch directly.
 patch_index "Patching macOS titlebar options for Linux (main window)..." \
-  'titleBarStyle:"hidden",titleBarOverlay:[A-Za-z0-9_$]+,trafficLightPosition:[A-Za-z0-9_$]+,' \
-  's/titleBarStyle:"hidden",titleBarOverlay:[A-Za-z0-9_$]+,trafficLightPosition:[A-Za-z0-9_$]+,//g'
+  'titleBarStyle:["`]hidden["`],titleBarOverlay:[A-Za-z0-9_$!.]+,trafficLightPosition:[A-Za-z0-9_$!.]+,' \
+  's/titleBarStyle:["`]hidden["`],titleBarOverlay:[A-Za-z0-9_$!.]+,trafficLightPosition:[A-Za-z0-9_$!.]+,//g'
 patch_index "Patching macOS titlebar options for Linux (about window)..." \
-  'titleBarStyle:"hiddenInset",autoHideMenuBar:!0,skipTaskbar:!0' \
-  's/titleBarStyle:"hiddenInset",autoHideMenuBar:!0,skipTaskbar:!0/autoHideMenuBar:!0/g'
+  'titleBarStyle:["`]hiddenInset["`],autoHideMenuBar:!0,skipTaskbar:!0' \
+  's/titleBarStyle:["`]hiddenInset["`],autoHideMenuBar:!0,skipTaskbar:!0/autoHideMenuBar:!0/g'
 
 # Fix origin validation: the asar's nue() function rejects file:// preloads
 # when app.isPackaged is false (which it always is when running via `electron .asar`).
@@ -171,8 +172,8 @@ patch_index "Patching macOS titlebar options for Linux (about window)..." \
 # via contextBridge, breaking the renderer shell. Drop the isPackaged requirement
 # for file:// origins — the content is inside our asar, so there's no security risk.
 patch_index "Patching origin validation for file:// preloads..." \
-  '[A-Za-z0-9_$]+\.protocol==="file:"&&[A-Za-z0-9_$]+\.app\.isPackaged===!0' \
-  's/([A-Za-z0-9_$]+)\.protocol==="file:"&&[A-Za-z0-9_$]+\.app\.isPackaged===!0/\1.protocol==="file:"/g'
+  '[A-Za-z0-9_$]+\.protocol===["`]file:["`]&&[A-Za-z0-9_$.]+\.app\.isPackaged===!0' \
+  's/([A-Za-z0-9_$]+)\.protocol===["`]file:["`]&&[A-Za-z0-9_$.]+\.app\.isPackaged===!0/\1.protocol==="file:"/g'
 
 # Fix preload origin validation: the mainView.js preload's h() guard checks
 # if window.location.href origin matches claude.ai/preview.claude.ai etc.
@@ -181,16 +182,16 @@ patch_index "Patching origin validation for file:// preloads..." \
 # renderer. This causes the Projects page to be empty and spaces to not persist.
 # Patch: add file:// protocol as an allowed origin.
 MAINVIEW_JS="linux-app-extracted/.vite/build/mainView.js"
-if [ -f "$MAINVIEW_JS" ] && ! grep -q 'e\.protocol==="file:"' "$MAINVIEW_JS"; then
+if [ -f "$MAINVIEW_JS" ] && ! grep -qE 'e\.protocol===["`]file:["`]' "$MAINVIEW_JS"; then
   echo "Patching preload origin validation for file:// protocol..."
-  sed -i 's/e\.hostname==="localhost"/e.hostname==="localhost"||e.protocol==="file:"/g' "$MAINVIEW_JS"
+  sed -i -E 's/e\.hostname===["`]localhost["`]/&||e.protocol==="file:"/g' "$MAINVIEW_JS"
 fi
 
 # Fix --effort xhigh: Claude Desktop may pass --effort xhigh but the SDK binary
 # only supports low/medium/high/max. Remap xhigh -> max in the CLI arg builder.
 patch_index "Patching --effort xhigh -> max..." \
-  '[A-Za-z0-9_$]+\.push\("--effort",this\.options\.effort\)' \
-  's/([A-Za-z0-9_$]+)\.push\("--effort",this\.options\.effort\)/\1.push("--effort",this.options.effort==="xhigh"?"max":this.options.effort)/g'
+  '[A-Za-z0-9_$]+\.push\(["`]--effort["`],this\.options\.effort\)' \
+  's/([A-Za-z0-9_$]+)\.push\(["`]--effort["`],this\.options\.effort\)/\1.push("--effort",this.options.effort==="xhigh"?"max":this.options.effort)/g'
 
 # NOTE: do not "simplify" the disclaimer wrapper away by patching the bundle's
 #   f(t){return process.platform!=="darwin"?t:{cmd:disclaimerBin(),args:[t.cmd,...t.args]}}
@@ -236,8 +237,8 @@ patch_index "Patching resourcesPath lookups to use asar-internal resources/..." 
 # matches the bare `isPackaged?process.resourcesPath:` shape, not these join()
 # forms, so this is a separate pass.
 patch_index "Patching MCP node-host asar paths to use getAppPath()..." \
-  '[A-Za-z0-9_$]+\.app\.isPackaged\?[A-Za-z0-9_$]+\.join\(process\.resourcesPath,"app\.asar"' \
-  's/([A-Za-z0-9_$]+)\.app\.isPackaged\?([A-Za-z0-9_$]+)\.join\(process\.resourcesPath,"app\.asar"/\1.app.isPackaged?\2.join(\1.app.getAppPath()/g'
+  '[A-Za-z0-9_$]+\.app\.isPackaged\?[A-Za-z0-9_$.]+\.join\(process\.resourcesPath,["`]app\.asar["`]' \
+  's/([A-Za-z0-9_$]+)\.app\.isPackaged\?([A-Za-z0-9_$.]+)\.join\(process\.resourcesPath,["`]app\.asar["`]/\1.app.isPackaged?\2.join(\1.app.getAppPath()/g'
 
 # Only repack if stub is newer than asar (or asar doesn't exist)
 # Repack if any file in the extracted tree is newer than the cached asar.
