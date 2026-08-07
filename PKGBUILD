@@ -176,11 +176,13 @@ JSEOF
         return 1
     fi
     _index_targets+=("$_indexjs")
+    # Every index*.chunk-*.js in the build dir, not just the ones index.js names:
+    # chunks require() each other transitively, so the shim's direct requires are
+    # an incomplete list. Each patch is grep-guarded, so extra files are free.
     local _chunk
     while IFS= read -r _chunk; do
-        [ -n "$_chunk" ] && [ -f "$_build_dir/$_chunk" ] \
-            && _index_targets+=("$_build_dir/$_chunk")
-    done < <(grep -oE 'index[0-9]*\.chunk-[A-Za-z0-9_-]+\.js' "$_indexjs" | sort -u)
+        [ -n "$_chunk" ] && _index_targets+=("$_chunk")
+    done < <(find "$_build_dir" -maxdepth 1 -name 'index*.chunk-*.js' -type f | sort)
 
     # patch_index <log msg> <grep -E guard> <sed -E script>
     # Runs the sed against every main-process code file matching the guard; logs

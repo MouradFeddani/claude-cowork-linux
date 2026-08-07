@@ -731,11 +731,14 @@ apply_patches() {
     # index.js. Patch index.js plus every chunk it require()s; enable-cowork.py
     # is idempotent (marker-guarded) and reports "not found" harmlessly for
     # files that don't contain a given pattern.
+    # Take every index*.chunk-*.js in the build dir, not just the ones index.js
+    # names: chunks require() each other transitively, so the shim's direct
+    # requires are an incomplete list.
     local -a targets=("$index_js")
     local chunk
     while IFS= read -r chunk; do
-        [[ -n "$chunk" && -f "$build_dir/$chunk" ]] && targets+=("$build_dir/$chunk")
-    done < <(grep -oE 'index[0-9]*\.chunk-[A-Za-z0-9_-]+\.js' "$index_js" | sort -u)
+        [[ -n "$chunk" ]] && targets+=("$chunk")
+    done < <(find "$build_dir" -maxdepth 1 -name 'index*.chunk-*.js' -type f | sort)
 
     # enable-cowork.py exits 0 when it finds (or has already patched) the
     # platform gate in a file, and 1 otherwise. On split-entry builds the gate

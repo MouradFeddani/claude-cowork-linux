@@ -191,8 +191,12 @@ else
 fi
 # Source-level guards: the recipe must discover chunks and run enable-cowork.py
 # across every discovered target, never regress to the index.js-only invocation.
-if grep -qF 'chunk-[A-Za-z0-9_-]+' "$REPO_ROOT/PKGBUILD"; then
-  pass "PKGBUILD: discovers index.chunk-*.js from the shim"
+# Either mechanism counts: following the shim's require()s (the historical
+# approach) or globbing the build dir for index*.chunk-*.js (which also reaches
+# chunks required transitively rather than by the shim directly).
+if grep -qF 'chunk-[A-Za-z0-9_-]+' "$REPO_ROOT/PKGBUILD" \
+   || grep -qF "name 'index*.chunk-*.js'" "$REPO_ROOT/PKGBUILD"; then
+  pass "PKGBUILD: discovers index*.chunk-*.js chunks"
 else
   fail "PKGBUILD: chunk discovery missing"
 fi

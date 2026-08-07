@@ -133,13 +133,19 @@ fi
 # Applying each grep-guarded patch across all of them is safe: a file that lacks
 # the pattern is skipped. This also survives minifier identifier rotation because
 # the patterns below match on stable API/string tokens, not minified var names.
+# Collect index.js plus *every* index*.chunk-*.js in the build dir, not just the
+# ones index.js names: chunks are also require()d transitively by other chunks
+# (on 1.26832.0 the --effort builder lives in index2.chunk-Cqfh0Vpp.js, which the
+# shim never references), so following only the shim's direct requires misses
+# them. Every patch below is grep-guarded, so listing a chunk that lacks the
+# pattern costs nothing.
 _BUILD_DIR="linux-app-extracted/.vite/build"
 INDEX_TARGETS=()
 if [ -f "$_BUILD_DIR/index.js" ]; then
   INDEX_TARGETS+=("$_BUILD_DIR/index.js")
   while IFS= read -r _chunk; do
-    [ -n "$_chunk" ] && [ -f "$_BUILD_DIR/$_chunk" ] && INDEX_TARGETS+=("$_BUILD_DIR/$_chunk")
-  done < <(grep -oE 'index[0-9]*\.chunk-[A-Za-z0-9_-]+\.js' "$_BUILD_DIR/index.js" | sort -u)
+    [ -n "$_chunk" ] && INDEX_TARGETS+=("$_chunk")
+  done < <(find "$_BUILD_DIR" -maxdepth 1 -name 'index*.chunk-*.js' -type f | sort)
 fi
 
 # patch_index "<log message>" "<grep -E guard>" "<sed -E script>"
