@@ -95,7 +95,8 @@ def patch_file(filepath):
 
     if not func_name or not func_full:
         print(f"ERROR: Platform-gate function not found in {filepath}")
-        print("  Searched for known patterns (xPt, wj) and regex fallback.")
+        known = ", ".join(name for _, name in KNOWN_PATTERNS)
+        print(f"  Searched for known patterns ({known}) and regex fallback.")
         print("  The minified function name may have changed — inspect index.js for")
         print("  a function checking process.platform and returning {{status:\"unsupported\"}}.")
         return False
