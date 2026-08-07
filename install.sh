@@ -811,8 +811,20 @@ case "\${1:-}" in
         # Protocol handler callback (e.g. OAuth redirect from browser).
         # Skip the full launch.sh setup — just forward the URL to the already-running
         # instance via Electron's single-instance mechanism.
-        FORWARDER="\$COWORK_DIR/protocol-forwarder.js"
-        if [ ! -f "\$FORWARDER" ]; then
+        # install_stubs() copies this next to the extracted app, not to the
+        # install-dir root, so looking only at the root meant the fast path was
+        # never taken: every OAuth callback fell through to a full launch.sh
+        # run, which re-patches and repacks app.asar and starts a second
+        # Electron — the app appears to close and reopen mid-login. Check the
+        # locations it can actually land in.
+        FORWARDER=""
+        for _cand in \\
+            "\$COWORK_DIR/protocol-forwarder.js" \\
+            "\$COWORK_DIR/linux-app-extracted/protocol-forwarder.js" \\
+            "\$COWORK_DIR/stubs/frame-fix/protocol-forwarder.js"; do
+            if [ -f "\$_cand" ]; then FORWARDER="\$_cand"; break; fi
+        done
+        if [ -z "\$FORWARDER" ]; then
             nohup bash -c 'cd "\$1" && shift && exec ./launch.sh "\$@"' \\
                 -- "\$COWORK_DIR" "\$@" >> "\$LOG_DIR/startup.log" 2>&1 &
             disown
