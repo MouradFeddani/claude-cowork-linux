@@ -214,12 +214,9 @@ function getExecFromDesktop(desktopFile) {
 // (malicious 'kitty' on $PATH) are blocked the same way $TERMINAL is.
 let _resolvedTerminal = undefined;
 
-const _TERMINAL_SAFE_DIRS = ['/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/'];
-
 function validateTerminalBinary(binName) {
-  // Resolve the binary via `which` and confirm it lives in a system dir
-  // (or is accepted by the exec capability registry). Returns the
-  // resolved path or null.
+  // Resolve the binary via `which` and confirm the exec capability registry
+  // classifies it as a system binary. Returns the resolved path or null.
   var resolvedPath;
   try {
     resolvedPath = execFileSync('which', [binName], { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'ignore'] }).trim();
@@ -228,15 +225,16 @@ function validateTerminalBinary(binName) {
   }
   if (!resolvedPath) return null;
   var registry = global.__coworkExecRegistry || null;
-  if (registry) {
-    var cap = registry.resolve(resolvedPath, []);
-    if (cap && (cap.capabilityId === 'system-cmd' || (typeof cap.capabilityId === 'string' && cap.capabilityId.indexOf('system-') === 0))) {
-      return resolvedPath;
-    }
+  if (!registry) {
+    // No local copy of the system-dir list to fall back to: that copy was a
+    // fourth answer to "may this command run", drifting from the registry's.
+    // The registry is armed at startup and asserted by startup_check, so its
+    // absence is a broken boot rather than a degraded mode.
+    console.warn('[Cowork] exec capability registry unavailable; not resolving terminal:', binName);
     return null;
   }
-  // Registry not available — fall back to system dir check.
-  if (_TERMINAL_SAFE_DIRS.some(function(d) { return resolvedPath.startsWith(d); })) {
+  var cap = registry.resolve(resolvedPath, []);
+  if (cap && typeof cap.capabilityId === 'string' && cap.capabilityId.indexOf('system-') === 0) {
     return resolvedPath;
   }
   return null;

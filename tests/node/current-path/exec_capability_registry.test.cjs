@@ -197,9 +197,111 @@ describe('exec_capability_registry', () => {
         const result = registry.resolveDisclaimerCommand(['/opt/evil/hack', '--rm-rf']);
         assert.strictEqual(result, null);
       });
+
+      // The invariant that closes #132/#164 as a class. The disclaimer wrapper
+      // is a platform adapter, not a policy layer: the set of commands the
+      // bundle routes through it grows between builds, so any admission rule
+      // that lives HERE rather than in resolve() goes stale and blocks a
+      // legitimate caller. Unwrap must agree with resolve() for every class.
+      // The Claude CLI is exempt: that path is deliberate translation (a
+      // macOS-shaped path mapped to our own binary), not an admission decision.
+      it('agrees with resolve() for every capability class', (t) => {
+        const home = fs.realpathSync(os.homedir());
+        const candidates = [
+          ...['/usr/bin/git', '/usr/local/bin/git', '/usr/bin/curl', '/usr/bin/env', '/bin/bash']
+            .filter((p) => fs.existsSync(p)),
+          home + '/.local/bin/some-mcp-server',
+          home + '/.cargo/bin/some-mcp-server',
+          '/opt/evil/hack',
+          '/nonexistent/nope',
+        ];
+        for (const cmd of candidates) {
+          const direct = registry.resolve(cmd, ['--flag']);
+          const unwrapped = registry.resolveDisclaimerCommand([cmd, '--flag']);
+          assert.strictEqual(
+            unwrapped === null, direct === null,
+            'disclaimer unwrap and resolve() disagree on admitting ' + cmd
+          );
+          if (direct && unwrapped) {
+            assert.strictEqual(
+              unwrapped.cmd, direct.cmd,
+              'disclaimer unwrap and resolve() disagree on the target for ' + cmd
+            );
+          }
+        }
+      });
+
+      it('admits a user-installed MCP server (regression for #164)', (t) => {
+        const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-execreg-'));
+        t.after(() => fs.rmSync(tmpHome, { recursive: true, force: true }));
+        const binDir = path.join(tmpHome, '.local', 'bin');
+        fs.mkdirSync(binDir, { recursive: true });
+        const server = path.join(binDir, 'desktop-commander');
+        fs.writeFileSync(server, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+
+        const reg = createExecCapabilityRegistry({ homedir: tmpHome });
+        const result = reg.resolveDisclaimerCommand([server, '--stdio']);
+        assert.ok(result, 'a user-configured MCP server must unwrap, not hit the exit-127 stub');
+        assert.strictEqual(result.cmd, server);
+        assert.deepStrictEqual(result.rest, ['--stdio']);
+      });
     });
 
     describe('user-mcp capability', () => {
+      // A bin/ shim that symlinks out of every prefix is the normal shape for
+      // npm-global, nvm, pipx, pnpm and volta installs. Classifying on the
+      // realpath alone walked those out of the allowlist and reported them
+      // unresolvable (#164); enumerating each manager's landing directory would
+      // only chase the list, so classification accepts the requested path too.
+      function withShim(t, targetRelative) {
+        const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-execreg-'));
+        t.after(() => fs.rmSync(tmpHome, { recursive: true, force: true }));
+        const binDir = path.join(tmpHome, '.local', 'bin');
+        const target = path.join(tmpHome, targetRelative);
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, '#!/usr/bin/env node\n', { mode: 0o755 });
+        const shim = path.join(binDir, 'mcp-server');
+        fs.symlinkSync(target, shim);
+        return { registry: createExecCapabilityRegistry({ homedir: tmpHome }), shim, target };
+      }
+
+      it('classifies an npm-global shim that resolves outside every bin/ prefix', (t) => {
+        const { registry: reg, shim } = withShim(t, '.local/lib/node_modules/pkg/dist/index.js');
+        const result = reg.resolve(shim, ['--stdio']);
+        assert.ok(result, 'a shim under .local/bin must resolve even when its target is not');
+        assert.strictEqual(result.capabilityId, 'user-mcp');
+      });
+
+      it('spawns the configured shim rather than its realpath', (t) => {
+        const { registry: reg, shim, target } = withShim(t, '.local/lib/node_modules/pkg/dist/index.js');
+        const result = reg.resolve(shim, []);
+        assert.strictEqual(result.cmd, shim,
+          'the shim owns argv[0] and the shebang; its target may not even be executable');
+        assert.notStrictEqual(result.cmd, target);
+      });
+
+      it('still blocks a path under no prefix at all', (t) => {
+        const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-execreg-'));
+        t.after(() => fs.rmSync(tmpHome, { recursive: true, force: true }));
+        const stray = path.join(tmpHome, 'somewhere', 'else', 'binary');
+        fs.mkdirSync(path.dirname(stray), { recursive: true });
+        fs.writeFileSync(stray, '#!/bin/sh\n', { mode: 0o755 });
+        const reg = createExecCapabilityRegistry({ homedir: tmpHome });
+        assert.strictEqual(reg.resolve(stray, []), null);
+      });
+
+      it('blocks a dangling shim (target must exist)', (t) => {
+        const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-execreg-'));
+        t.after(() => fs.rmSync(tmpHome, { recursive: true, force: true }));
+        const binDir = path.join(tmpHome, '.local', 'bin');
+        fs.mkdirSync(binDir, { recursive: true });
+        const shim = path.join(binDir, 'gone');
+        fs.symlinkSync(path.join(tmpHome, 'never', 'existed'), shim);
+        const reg = createExecCapabilityRegistry({ homedir: tmpHome });
+        assert.strictEqual(reg.resolve(shim, []), null);
+      });
+
       it('covers all previously allowed user dirs', () => {
         const home = os.homedir();
         const expectedPrefixes = [

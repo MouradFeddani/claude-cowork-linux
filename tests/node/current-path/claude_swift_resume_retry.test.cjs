@@ -50,6 +50,12 @@ function runSwiftRetryHarness(options) {
   const script = `
     const fs = require('fs');
     global.__coworkPasswdHomedir = ${JSON.stringify(tempHome)};
+    // Arm the exec capability registry exactly as frame-fix-wrapper does at
+    // startup. The orchestrator has no fallback allowlist to degrade into, so
+    // an unarmed registry now refuses every spawn -- which is the point: the
+    // harness must exercise the same admission rule the app runs.
+    global.__coworkExecRegistry = require(${JSON.stringify(path.join(tempRepoRoot, 'cowork', 'exec_capability_registry.js'))})
+      .createExecCapabilityRegistry({ homedir: ${JSON.stringify(tempHome)} });
     const addon = require(${JSON.stringify(modulePath)});
     const resultFile = ${JSON.stringify(resultFile)};
     const outputs = [];
@@ -126,6 +132,10 @@ function runSwiftBridgeHarness(options) {
   const script = `
     const fs = require('fs');
     global.__coworkPasswdHomedir = ${JSON.stringify(tempHome)};
+    // See runSwiftRetryHarness: the registry is the only admission rule, so the
+    // harness arms it the same way frame-fix-wrapper does at startup.
+    global.__coworkExecRegistry = require(${JSON.stringify(path.join(tempRepoRoot, 'cowork', 'exec_capability_registry.js'))})
+      .createExecCapabilityRegistry({ homedir: ${JSON.stringify(tempHome)} });
     global.__coworkSessionsApiRequestSync = () => {
       throw new Error('Unexpected sessions API request — orchestrator should not call API');
     };

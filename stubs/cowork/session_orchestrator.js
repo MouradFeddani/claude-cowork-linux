@@ -510,10 +510,8 @@ class SessionOrchestrator {
       }
     }
     const {
-      appSupportRoot,
       canonicalizePathForHostAccess,
       canonicalizeVmPathStrict,
-      claudeVmRoots,
       resolveClaudeBinaryPath,
       sessionsBase,
       translateVmPathStrict,
@@ -584,35 +582,18 @@ class SessionOrchestrator {
         return { success: false, error: 'Unexpected command' };
       }
     } else {
-      var passwdHome = global.__coworkPasswdHomedir || os.userInfo().homedir;
-      // Only build VM prefixes if appSupportRoot or claudeVmRoots is provided.
-      // Without an absolute base, path.join('', 'claude-code-vm') would yield
-      // a relative prefix that any relative command starting with that string
-      // could match (passing fs.existsSync via process.cwd() resolution).
-      const vmPrefixes = Array.isArray(claudeVmRoots) && claudeVmRoots.length > 0
-        ? claudeVmRoots.map((r) => path.resolve(r) + path.sep)
-        : (appSupportRoot && path.isAbsolute(appSupportRoot)
-            ? [path.join(appSupportRoot, 'claude-code-vm') + path.sep]
-            : []);
-      const fallbackPrefixes = [
-        ...vmPrefixes,
-        path.join(passwdHome, '.local/bin/'),
-        path.join(passwdHome, '.local/share/claude/'),
-        path.join(passwdHome, '.npm-global/bin/'),
-        path.join(os.userInfo().homedir, '.local/bin/'),
-        '/usr/local/bin/',
-        '/usr/bin/',
-      ];
-      if (normalizedCommand && fallbackPrefixes.some((p) => normalizedCommand.startsWith(p)) && fs.existsSync(normalizedCommand)) {
-        hostCommand = normalizedCommand;
-        trace('No exec registry, allowed absolute path: ' + normalizedCommand);
-      } else {
-        trace('Unexpected command blocked (no registry): "' + String(command) + '"');
-        if (typeof onError === 'function') {
-          onError(processId, 'Unexpected command: ' + String(command), '');
-        }
-        return { success: false, error: 'Unexpected command' };
+      // No second allowlist here. This used to fall back to its own prefix list
+      // -- overlapping with the registry's but not equal to it, matched on the
+      // raw path with no realpath -- which meant "may this command run" had two
+      // answers depending on whether the registry happened to be armed. The
+      // registry is installed at startup (frame-fix-wrapper) and startup_check
+      // asserts it (exec_capability_registry_armed), so its absence is a broken
+      // boot, not a mode to silently degrade into.
+      trace('Exec capability registry unavailable; refusing to spawn "' + String(command) + '"');
+      if (typeof onError === 'function') {
+        onError(processId, 'Exec capability registry unavailable', '');
       }
+      return { success: false, error: 'Exec capability registry unavailable' };
     }
 
     // Step 4: Translate VM paths in arguments to host paths

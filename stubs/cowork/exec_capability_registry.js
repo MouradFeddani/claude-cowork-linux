@@ -13,7 +13,11 @@ function existsExecutable(p) {
   }
 }
 
-function realpathSafe(p) {
+// Syntactic validation only: absolute, no NUL, no empty/./.. segments. Returns
+// the path unchanged, or null. Split out of realpathSafe so a caller can ask
+// "is this path well-formed?" without following symlinks -- classification
+// sometimes needs the path as written, not where it lands (see resolve()).
+function lexicalSafe(p) {
   if (typeof p !== 'string' || p.length === 0) return null;
   if (p.charCodeAt(0) !== 47) return null;
   if (p.indexOf('\0') >= 0) return null;
@@ -21,6 +25,11 @@ function realpathSafe(p) {
   for (var i = 1; i < segs.length; i++) {
     if (segs[i] === '' || segs[i] === '.' || segs[i] === '..') return null;
   }
+  return p;
+}
+
+function realpathSafe(p) {
+  if (lexicalSafe(p) === null) return null;
   try {
     return fs.realpathSync(p);
   } catch (_) {
@@ -103,9 +112,18 @@ function createExecCapabilityRegistry({
     return null;
   }
 
+  function underUserPrefix(p) {
+    if (!p) return false;
+    for (var i = 0; i < USER_MCP_PREFIXES.length; i++) {
+      if (p.startsWith(USER_MCP_PREFIXES[i])) return true;
+    }
+    return false;
+  }
+
   function resolve(binaryPath, args) {
     if (typeof binaryPath !== 'string' || binaryPath.length === 0) return null;
 
+    var lexical = lexicalSafe(binaryPath);
     var real = realpathSafe(binaryPath);
 
     var claudePath = resolveClaudeCli();
@@ -131,10 +149,27 @@ function createExecCapabilityRegistry({
       }
     }
 
-    for (var ui = 0; ui < USER_MCP_PREFIXES.length; ui++) {
-      if (real.startsWith(USER_MCP_PREFIXES[ui])) {
-        return { capabilityId: 'user-mcp', cmd: real, args: args || [] };
-      }
+    // user-mcp: a binary the user installed under their own home. Classified on
+    // the requested path OR its realpath, because package- and version-manager
+    // shims symlink out of `bin/` into a versioned lib/ or venv directory --
+    // npm-global lands in lib/node_modules/, and nvm, pipx, pnpm and volta each
+    // land somewhere different again. Resolving first walked all of those out of
+    // every prefix, so a legitimately configured MCP server read as unresolvable
+    // (#164). Enumerating the landing directories would only chase that list.
+    //
+    // This grants nothing new: every prefix below is user-writable, so a symlink
+    // from one to another reaches only what was already reachable, and a shim
+    // pointing at a system binary was matched by SYSTEM_CMD_PREFIXES above.
+    // Realpath strictness still applies to the system classes, where it does
+    // stop a user symlink from masquerading as /usr/bin/git.
+    if (underUserPrefix(lexical)) {
+      // Spawn the shim the user configured rather than its realpath: an npm-style
+      // shim points at a package entrypoint whose exec bit is the package's
+      // business, and argv[0]/wrapper semantics belong to the shim.
+      return { capabilityId: 'user-mcp', cmd: lexical, args: args || [] };
+    }
+    if (underUserPrefix(real)) {
+      return { capabilityId: 'user-mcp', cmd: real, args: args || [] };
     }
 
     console.warn('[exec-capability] BLOCKED: ' + binaryPath);
@@ -163,12 +198,20 @@ function createExecCapabilityRegistry({
     return null;
   }
 
-  // Disclaimer unwrap only accepts system-owned binaries or the resolved
-  // claude CLI. User-writable paths (USER_MCP_PREFIXES) are EXCLUDED here
-  // because the asar shouldn't invoke user-installed binaries through the
-  // macOS disclaimer wrapper — only system tools like git. Accepting
-  // user-mcp here would let any IPC-influenced args[0] execute arbitrary
-  // user-installed binaries.
+  // The disclaimer wrapper is a macOS platform adapter, not a policy layer. In
+  // the asar it is one function -- `platform!=="darwin" ? cmd : {cmd:disclaimer,
+  // args:[cmd,...]}` -- whose non-darwin branch returns the command untouched;
+  // on macOS the wrapper disclaims TCC responsibility and execs. We only meet it
+  // because we spoof darwin. launch.sh patches that branch back to the identity
+  // it already is on Linux, so this unwrap is the fallback for builds where the
+  // patch doesn't match.
+  //
+  // It therefore TRANSLATES macOS-shaped paths and DELEGATES admission to
+  // resolve() -- the one admission rule, shared with the process-spawn path in
+  // session_orchestrator. It holds no policy of its own. A carve-out here is
+  // what blocked the Claude CLI in #132 and every user-installed MCP server in
+  // #164: the wrapper's caller set is "whatever the bundle routes through it",
+  // which no allowlist maintained here can stay ahead of.
   function resolveDisclaimerCommand(args) {
     if (!Array.isArray(args) || args.length === 0) return null;
     var cmd = args[0];
@@ -188,12 +231,7 @@ function createExecCapabilityRegistry({
       return claudePath ? { cmd: claudePath, rest: rest } : null;
     }
     var resolved = resolve(cmd, rest);
-    if (!resolved) return null;
-    if (resolved.capabilityId === 'user-mcp') {
-      console.warn('[exec-capability] disclaimer unwrap REJECTED user-mcp path: ' + cmd);
-      return null;
-    }
-    return { cmd: resolved.cmd, rest: rest };
+    return resolved ? { cmd: resolved.cmd, rest: rest } : null;
   }
 
   function invalidateClaudeCache() {
@@ -213,6 +251,7 @@ function createExecCapabilityRegistry({
 
 module.exports = Object.freeze({
   createExecCapabilityRegistry: createExecCapabilityRegistry,
+  lexicalSafe: lexicalSafe,
   realpathSafe: realpathSafe,
   existsExecutable: existsExecutable,
 });
