@@ -157,15 +157,19 @@ function createExecCapabilityRegistry({
     // every prefix, so a legitimately configured MCP server read as unresolvable
     // (#164). Enumerating the landing directories would only chase that list.
     //
-    // This grants nothing new: every prefix below is user-writable, so a symlink
-    // from one to another reaches only what was already reachable, and a shim
-    // pointing at a system binary was matched by SYSTEM_CMD_PREFIXES above.
-    // Realpath strictness still applies to the system classes, where it does
-    // stop a user symlink from masquerading as /usr/bin/git.
+    // This is a deliberate widening, not a no-op. A shim under a user prefix now
+    // resolves even when its target lies outside every prefix -- exactly the
+    // npm-global case, and blocked before. It hands an attacker no capability
+    // they lacked, because write access to a user prefix already admitted an
+    // executable dropped there directly; a symlink is a slower way to do what a
+    // plain file already did. What it does not touch is the system classes:
+    // those are still matched on the realpath above, so a user symlink cannot
+    // masquerade as /usr/bin/git.
     if (underUserPrefix(lexical)) {
-      // Spawn the shim the user configured rather than its realpath: an npm-style
-      // shim points at a package entrypoint whose exec bit is the package's
-      // business, and argv[0]/wrapper semantics belong to the shim.
+      // Spawn the shim the user configured rather than its realpath: argv[0] and
+      // any wrapper semantics belong to the shim, and the realpath is a path the
+      // user never named. Executability is identical either way -- access(X_OK)
+      // follows symlinks -- so this is about intent, not about the exec bit.
       return { capabilityId: 'user-mcp', cmd: lexical, args: args || [] };
     }
     if (underUserPrefix(real)) {

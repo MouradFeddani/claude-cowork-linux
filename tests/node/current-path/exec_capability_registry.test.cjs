@@ -277,8 +277,33 @@ describe('exec_capability_registry', () => {
         const { registry: reg, shim, target } = withShim(t, '.local/lib/node_modules/pkg/dist/index.js');
         const result = reg.resolve(shim, []);
         assert.strictEqual(result.cmd, shim,
-          'the shim owns argv[0] and the shebang; its target may not even be executable');
+          'argv[0] and wrapper semantics belong to the shim; the realpath is a path the user never named');
         assert.notStrictEqual(result.cmd, target);
+      });
+
+      // The widening this change makes, pinned explicitly so it reads as a
+      // policy decision rather than an accident: before, classification ran on
+      // the realpath, so a shim whose target sat outside every prefix was
+      // blocked -- which is the npm-global case behind #164. It grants no
+      // capability that writing an executable into the same prefix didn't
+      // already grant.
+      it('admits a shim whose target lies outside every prefix', (t) => {
+        const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-execreg-'));
+        t.after(() => fs.rmSync(tmpHome, { recursive: true, force: true }));
+        const binDir = path.join(tmpHome, '.local', 'bin');
+        const outside = path.join(tmpHome, 'opt', 'vendor', 'server');
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.mkdirSync(path.dirname(outside), { recursive: true });
+        fs.writeFileSync(outside, '#!/bin/sh\n', { mode: 0o755 });
+        const shim = path.join(binDir, 'srv');
+        fs.symlinkSync(outside, shim);
+
+        const reg = createExecCapabilityRegistry({ homedir: tmpHome });
+        assert.strictEqual(reg.resolve(outside, []), null,
+          'the target on its own is still outside every prefix and stays blocked');
+        const viaShim = reg.resolve(shim, []);
+        assert.ok(viaShim, 'reaching it through a shim the user placed under a prefix is admitted');
+        assert.strictEqual(viaShim.capabilityId, 'user-mcp');
       });
 
       it('still blocks a path under no prefix at all', (t) => {
