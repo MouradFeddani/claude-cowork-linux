@@ -159,11 +159,14 @@ describe('exec_capability_registry', () => {
           '/Applications/Claude.app/Contents/MacOS/Claude',
           '--version',
         ]);
-        if (fs.existsSync('/usr/local/bin/claude')) {
-          assert.ok(result);
-          assert.strictEqual(result.cmd, '/usr/local/bin/claude');
-          assert.deepStrictEqual(result.rest, ['--version']);
-        }
+        // Not guarded on existsSync: resolveClaudeCli() returns whatever
+        // resolveClaudeBinaryPath gives it without touching the filesystem, so
+        // the old guard only had the effect of skipping these assertions
+        // wherever /usr/local/bin/claude was absent -- which is why the
+        // capital-C path failing to match went unnoticed.
+        assert.ok(result);
+        assert.strictEqual(result.cmd, '/usr/local/bin/claude');
+        assert.deepStrictEqual(result.rest, ['--version']);
       });
 
       it('resolves a non-.app claude path (e.g. claude-code-vm) by basename to claude-cli', () => {
@@ -181,6 +184,31 @@ describe('exec_capability_registry', () => {
         assert.ok(result, 'a claude-basename path must unwrap, not fall through to the stub');
         assert.strictEqual(result.cmd, '/usr/local/bin/claude');
         assert.deepStrictEqual(result.rest, ['-p', 'hi']);
+      });
+
+      // Why the wrap/unwrap round-trip is kept rather than patched out of the
+      // bundle. The asar sets pathToClaudeCodeExecutable from Ql({cmd:r}): with
+      // the wrap it is the disclaimer binary and r rides in argv, so this unwrap
+      // gets to swap in OUR resolved binary. Neutralise the wrap and the SDK is
+      // handed r unchanged -- the asar's claude-code-vm or .app path -- and the
+      // substitution never happens. The substitution IS the #132 fix, so it has
+      // to survive whatever path the asar picks.
+      it('substitutes our resolved binary for every claude path the asar can pick', () => {
+        const reg = createExecCapabilityRegistry({
+          homedir: os.homedir(),
+          resolveClaudeBinaryPath: () => '/usr/local/bin/claude',
+        });
+        const asarPicks = [
+          '/Applications/Claude.app/Contents/MacOS/Claude',
+          '/home/u/.config/Claude/claude-code-vm/2.0.0/claude',
+          '/home/u/.local/bin/claude',
+        ];
+        for (const picked of asarPicks) {
+          const result = reg.resolveDisclaimerCommand([picked]);
+          assert.ok(result, 'must unwrap, not fall through to the exit-127 stub: ' + picked);
+          assert.strictEqual(result.cmd, '/usr/local/bin/claude',
+            'the asar path must be replaced by ours, never spawned as given: ' + picked);
+        }
       });
 
       it('resolves system binary commands', () => {

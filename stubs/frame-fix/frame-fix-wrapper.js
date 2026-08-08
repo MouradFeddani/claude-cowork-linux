@@ -834,15 +834,17 @@ try {
 
   // The asar routes spawns through a "disclaimer" binary on macOS
   // (Helpers/disclaimer <cmd> <args>) — not just git: anything reaching the
-  // bundle's spawnAsync. Since we spoof process.platform to "darwin", that
-  // codepath activates on Linux too, and the binary doesn't exist here.
+  // bundle's spawnAsync, plus a dozen direct callsites. Since we spoof
+  // process.platform to "darwin", that codepath activates on Linux too, and
+  // the binary doesn't exist here.
   //
-  // launch.sh now patches the bundle's wrapper function to the asar's own
-  // non-darwin branch (identity), so on a patched build nothing below fires.
-  // Everything here is the fallback for builds where that patch doesn't match:
-  // a fail-closed stub, plus spawn interception that unwraps the wrapper and
-  // defers to the exec capability registry for admission. The unwrap holds no
-  // policy of its own — see resolveDisclaimerCommand.
+  // So we create a fail-closed stub and intercept the spawn: the interception
+  // is where the wrapper's argv is unwrapped, macOS-shaped paths are translated
+  // to their Linux equivalents, and admission is deferred to the exec
+  // capability registry. That makes this the seam through which we see the
+  // bundle's spawn decisions — see resolveDisclaimerCommand for why the wrap
+  // must not be patched out of the bundle, and why this unwrap must never grow
+  // a policy of its own.
   const disclaimerDir = path.join(path.dirname(process.resourcesPath), 'Helpers');
   const disclaimerBin = path.join(disclaimerDir, 'disclaimer');
   {
@@ -904,8 +906,7 @@ try {
       }
     } catch (_) {}
 
-    console.log('[disclaimer] Fallback unwrap armed at ' + disclaimerBin
-      + ' (inert when launch.sh patched the bundle wrapper)');
+    console.log('[disclaimer] Intercepting exec calls at ' + disclaimerBin);
   }
 } catch (e) {
   console.error('[TMPDIR] Setup failed:', e.message);

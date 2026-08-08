@@ -202,20 +202,28 @@ function createExecCapabilityRegistry({
     return null;
   }
 
-  // The disclaimer wrapper is a macOS platform adapter, not a policy layer. In
-  // the asar it is one function -- `platform!=="darwin" ? cmd : {cmd:disclaimer,
-  // args:[cmd,...]}` -- whose non-darwin branch returns the command untouched;
-  // on macOS the wrapper disclaims TCC responsibility and execs. We only meet it
-  // because we spoof darwin. launch.sh patches that branch back to the identity
-  // it already is on Linux, so this unwrap is the fallback for builds where the
-  // patch doesn't match.
+  // In the asar the disclaimer wrapper is one function -- `platform!=="darwin"
+  // ? cmd : {cmd:disclaimer, args:[cmd,...]}` -- and on macOS it disclaims TCC
+  // responsibility and execs. We only meet it because we spoof darwin.
   //
-  // It therefore TRANSLATES macOS-shaped paths and DELEGATES admission to
-  // resolve() -- the one admission rule, shared with the process-spawn path in
-  // session_orchestrator. It holds no policy of its own. A carve-out here is
-  // what blocked the Claude CLI in #132 and every user-installed MCP server in
-  // #164: the wrapper's caller set is "whatever the bundle routes through it",
-  // which no allowlist maintained here can stay ahead of.
+  // It is tempting to read that as pure macOS baggage and patch the bundle to
+  // its non-darwin branch, deleting the wrap/unwrap round-trip. Don't. On Linux
+  // we have repurposed the wrap into the seam we rely on: it is the only
+  // chokepoint where we see the bundle's own spawn decisions (12 call sites --
+  // the preview server, uv, python, node, gh, ssh, and the Claude CLI), and
+  // this unwrap substitutes OUR resolved Claude binary for whatever path the
+  // asar picked. Take the identity branch and the SDK gets
+  // `pathToClaudeCodeExecutable` = the asar's own claude-code-vm/.app path,
+  // unsubstituted -- which is #132 again, silently, at session spawn.
+  //
+  // So the unwrap stays, and what it must never grow is a policy of its own: it
+  // TRANSLATES macOS-shaped paths and DELEGATES admission to resolve(), the one
+  // admission rule, shared with the process-spawn path in session_orchestrator.
+  // A carve-out here is what blocked the Claude CLI in #132 and every
+  // user-installed MCP server in #164 -- the wrapper's caller set is "whatever
+  // the bundle routes through it", which grows between builds, so no allowlist
+  // maintained at this callsite can stay ahead of it. The test asserting this
+  // agrees with resolve() for every class is what keeps that true.
   function resolveDisclaimerCommand(args) {
     if (!Array.isArray(args) || args.length === 0) return null;
     var cmd = args[0];
@@ -228,9 +236,16 @@ function createExecCapabilityRegistry({
     // fell through and the disclaimer stub (exit 127) ran instead -- see #132.
     // Recognise the Claude CLI by basename and map it to OUR resolved binary
     // (never the caller's path), so this adds no privilege the caller lacks.
+    // Case-insensitive on both arms. The shipped bundle path is `Claude.app`
+    // with a capital C and an executable named `Claude`, which matched neither
+    // a lowercase-only `claude\.app` regex nor `basename === 'claude'` -- so the
+    // real macOS-shaped path fell through to the exit-127 stub, #132's exact
+    // failure. The test that nominally covered this was guarded on
+    // existsSync('/usr/local/bin/claude') and silently asserted nothing wherever
+    // that file was absent.
     if (typeof cmd === 'string' &&
-        (/claude\.app\/Contents\/MacOS\/[Cc]laude$/.test(cmd) ||
-         path.basename(cmd) === 'claude')) {
+        (/claude\.app\/Contents\/MacOS\/claude$/i.test(cmd) ||
+         path.basename(cmd).toLowerCase() === 'claude')) {
       var claudePath = resolveClaudeCli();
       return claudePath ? { cmd: claudePath, rest: rest } : null;
     }
