@@ -65,6 +65,8 @@ const aboutOpts={titleBarStyle:"hiddenInset",autoHideMenuBar:!0,skipTaskbar:!0};
 function guard(){return Zq.protocol==="file:"&&Yw.app.isPackaged===!0}
 function buildArgs(){Xp.push("--effort",this.options.effort)}
 function handoff(){mB.app.invalidateCurrentActivity();mB.app.setUserActivity(qq,{})}
+function wrapSpawn(t){return process.platform!=="darwin"?t:{cmd:rpt(),args:[t.cmd,...t.args]}}
+function unrelatedPlatformGate(){return process.platform!=="darwin"?linuxPath:macPath}
 const res=kk.app.isPackaged?process.resourcesPath:someFallback;
 const host=kk.app.isPackaged?jn.join(process.resourcesPath,"app.asar","mcp-runtime","nodeHost.js"):jn.join(kk.app.getAppPath(),"nodeHost.js");
 EOF
@@ -151,7 +153,18 @@ else
   assert_grep "$LCHUNK" '\(mB\.app\.setUserActivity\|\|function\(\)\{\}\)\)\(qq,'          "Handoff setUserActivity no-op fallback"
   refute_grep "$LCHUNK" 'kk\.app\.isPackaged\?process\.resourcesPath:' "resourcesPath fallback forced"
   assert_grep "$LCHUNK" 'kk\.app\.isPackaged\?jn\.join\(kk\.app\.getAppPath\(\),"mcp-runtime"' "MCP node-host uses getAppPath()"
+  # Disclaimer wrapper (#132/#164): the wrap site takes the asar's own Linux
+  # branch, so nothing is routed through Helpers/disclaimer and the JS unwrap
+  # has no growing caller set to keep up with. Structurally matched, so a
+  # decoy platform test with a different shape must survive untouched.
+  assert_grep "$LCHUNK" 'function wrapSpawn\(t\)\{return !0\?t:' "disclaimer wrapper takes the Linux (identity) branch"
+  assert_grep "$LCHUNK" 'function unrelatedPlatformGate\(\)\{return process\.platform!=="darwin"\?linuxPath:macPath\}' \
+              "unrelated process.platform test left untouched"
   assert_parses "$LCHUNK" "chunk parses after launch.sh patches"
+  # Relaunches re-run these seds against an already-patched tree.
+  ( INDEX_TARGETS=("$LCHUNK"); source "$BLOCK" ) >/dev/null 2>&1
+  assert_grep "$LCHUNK" 'function wrapSpawn\(t\)\{return !0\?t:' "disclaimer patch is idempotent across relaunches"
+  assert_parses "$LCHUNK" "chunk still parses after a second patch pass"
 fi
 
 # ---------------------------------------------------------------------------
@@ -176,6 +189,7 @@ else
   refute_grep "$PKCHUNK" 'titleBarStyle:"hidden"'          "PKGBUILD: main-window titlebar removed (chunk)"
   refute_grep "$PKCHUNK" 'titleBarStyle:"hiddenInset"'     "PKGBUILD: about-window titlebar removed (chunk)"
   assert_grep "$PKCHUNK" 'return Zq\.protocol==="file:"\}' "PKGBUILD: origin isPackaged dropped for file:// (chunk)"
+  assert_grep "$PKCHUNK" 'function wrapSpawn\(t\)\{return !0\?t:' "PKGBUILD: disclaimer wrapper takes the Linux branch (chunk)"
   assert_parses "$PKCHUNK" "PKGBUILD: chunk parses after patch_index seds"
 fi
 # Source-level guards: the recipe must discover chunks and run enable-cowork.py

@@ -192,6 +192,30 @@ patch_index "Patching --effort xhigh -> max..." \
   '[A-Za-z0-9_$]+\.push\("--effort",this\.options\.effort\)' \
   's/([A-Za-z0-9_$]+)\.push\("--effort",this\.options\.effort\)/\1.push("--effort",this.options.effort==="xhigh"?"max":this.options.effort)/g'
 
+# Fix the macOS disclaimer wrapper: the bundle routes spawns through
+#   f(t){return process.platform!=="darwin"?t:{cmd:disclaimerBin(),args:[t.cmd,...t.args]}}
+# On macOS that wrapper disclaims TCC responsibility and execs; on Linux the
+# asar's own branch returns the command untouched. We only take the darwin
+# branch because we spoof process.platform, and then have to reconstruct the
+# identity in JS by intercepting child_process and unwrapping (see
+# stubs/cowork/exec_capability_registry.js resolveDisclaimerCommand).
+#
+# That round-trip is the source of #132 and #164: the unwrap has to recognise
+# every command the bundle routes through the wrapper, and that set grows
+# silently between builds (git, then the Claude CLI, then local MCP servers --
+# anything reaching the bundle's spawnAsync). Take the branch the asar already
+# has for this platform instead, so nothing is wrapped and there is nothing to
+# recognise.
+#
+# Matched on shape, not identifiers: the minifier rotates the function and
+# binding names every build, but `platform!=="darwin"?<id>:{cmd:<id>(),args:[`
+# comes from the source structure. The guard stops matching once patched, so
+# relaunches are no-ops, and if a future build reshapes this the patch simply
+# doesn't apply and the JS unwrap still handles it.
+patch_index "Patching macOS disclaimer wrapper to the asar's own Linux branch..." \
+  'process\.platform!=="darwin"\?[A-Za-z0-9_$]+:\{cmd:[A-Za-z0-9_$]+\(\),args:\[' \
+  's/process\.platform!=="darwin"\?([A-Za-z0-9_$]+):\{cmd:([A-Za-z0-9_$]+)\(\),args:\[/!0?\1:{cmd:\2(),args:[/g'
+
 # Fix macOS Handoff API: invalidateCurrentActivity() and setUserActivity() are
 # macOS-only Electron APIs that crash on Linux. Replace with safe no-op fallbacks.
 patch_index "Patching macOS Handoff API invalidateCurrentActivity for Linux..." \

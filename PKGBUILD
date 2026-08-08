@@ -216,6 +216,18 @@ JSEOF
         '[A-Za-z0-9_$]+\.protocol==="file:"&&[A-Za-z0-9_$]+\.app\.isPackaged===!0' \
         's/([A-Za-z0-9_$]+)\.protocol==="file:"&&[A-Za-z0-9_$]+\.app\.isPackaged===!0/\1.protocol==="file:"/g'
 
+    # Take the asar's own non-darwin branch for the macOS disclaimer wrapper.
+    # The bundle routes spawns through
+    #   f(t){return process.platform!=="darwin"?t:{cmd:disclaimerBin(),args:[t.cmd,...t.args]}}
+    # and we only reach the darwin side because we spoof process.platform. That
+    # forces the JS unwrap in exec_capability_registry.js to recognise every
+    # command the bundle sends through the wrapper -- a set that grew from git
+    # to the Claude CLI (#132) to local MCP servers (#164). Matched on shape so
+    # identifier rotation doesn't break it; the guard stops matching once applied.
+    patch_index "Patching macOS disclaimer wrapper to the asar's own Linux branch..." \
+        'process\.platform!=="darwin"\?[A-Za-z0-9_$]+:\{cmd:[A-Za-z0-9_$]+\(\),args:\[' \
+        's/process\.platform!=="darwin"\?([A-Za-z0-9_$]+):\{cmd:([A-Za-z0-9_$]+)\(\),args:\[/!0?\1:{cmd:\2(),args:[/g'
+
     # Add linux branch to getHostPlatform() (without this, the minified
     # platform switch throws "Unsupported platform: linux-x64" and the
     # ClaudeCode.prepare IPC fails -- Cowork tasks fail in the UI with a
