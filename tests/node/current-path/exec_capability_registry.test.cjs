@@ -9,6 +9,42 @@ const { createExecCapabilityRegistry, realpathSafe, existsExecutable } = require
   path.resolve(__dirname, '../../../stubs/cowork/exec_capability_registry.js')
 );
 
+// Admission for user binaries is now the user's declaration, so fixtures build a
+// real config and point the registry at it. env is scoped to the fixture home so
+// these never read the developer's own MCP config.
+function writeDesktopConfig(tmpHome, mcpServers) {
+  const configDir = path.join(tmpHome, '.config', 'Claude');
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(configDir, 'claude_desktop_config.json'),
+    JSON.stringify({ mcpServers }),
+    'utf8'
+  );
+}
+
+function makeRegistry(tmpHome, overrides = {}) {
+  return createExecCapabilityRegistry({
+    homedir: tmpHome,
+    env: {
+      XDG_CONFIG_HOME: path.join(tmpHome, '.config'),
+      CLAUDE_CONFIG_DIR: tmpHome,
+      PATH: process.env.PATH || '/usr/bin:/bin',
+    },
+    ...overrides,
+  });
+}
+
+function declaredServer(t, name) {
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-execreg-'));
+  t.after(() => fs.rmSync(tmpHome, { recursive: true, force: true }));
+  const binDir = path.join(tmpHome, '.local', 'bin');
+  fs.mkdirSync(binDir, { recursive: true });
+  const server = path.join(binDir, name);
+  fs.writeFileSync(server, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  writeDesktopConfig(tmpHome, { [name]: { command: server } });
+  return { registry: makeRegistry(tmpHome), server, tmpHome };
+}
+
 describe('exec_capability_registry', () => {
   describe('realpathSafe', () => {
     it('rejects non-strings', () => {
@@ -259,29 +295,22 @@ describe('exec_capability_registry', () => {
         }
       });
 
-      it('admits a user-installed MCP server (regression for #164)', (t) => {
-        const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-execreg-'));
-        t.after(() => fs.rmSync(tmpHome, { recursive: true, force: true }));
-        const binDir = path.join(tmpHome, '.local', 'bin');
-        fs.mkdirSync(binDir, { recursive: true });
-        const server = path.join(binDir, 'desktop-commander');
-        fs.writeFileSync(server, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-
-        const reg = createExecCapabilityRegistry({ homedir: tmpHome });
+      it('admits a declared MCP server (regression for #164)', (t) => {
+        const { registry: reg, server } = declaredServer(t, 'desktop-commander');
         const result = reg.resolveDisclaimerCommand([server, '--stdio']);
-        assert.ok(result, 'a user-configured MCP server must unwrap, not hit the exit-127 stub');
+        assert.ok(result, 'a declared MCP server must unwrap, not hit the exit-127 stub');
         assert.strictEqual(result.cmd, server);
         assert.deepStrictEqual(result.rest, ['--stdio']);
       });
     });
 
     describe('user-mcp capability', () => {
-      // A bin/ shim that symlinks out of every prefix is the normal shape for
-      // npm-global, nvm, pipx, pnpm and volta installs. Classifying on the
-      // realpath alone walked those out of the allowlist and reported them
-      // unresolvable (#164); enumerating each manager's landing directory would
-      // only chase the list, so classification accepts the requested path too.
-      function withShim(t, targetRelative) {
+      // Admission is the user's own declaration, not the binary's location.
+      // A location allowlist is unbounded in what it permits -- anything the
+      // user drops in ~/.local/bin -- and still misses the npm-global case,
+      // because package managers symlink out of bin/ into directories no prefix
+      // names (#164). Matching the declaration is tighter in both directions.
+      function withShim(t, targetRelative, { declare = true } = {}) {
         const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-execreg-'));
         t.after(() => fs.rmSync(tmpHome, { recursive: true, force: true }));
         const binDir = path.join(tmpHome, '.local', 'bin');
@@ -291,17 +320,25 @@ describe('exec_capability_registry', () => {
         fs.writeFileSync(target, '#!/usr/bin/env node\n', { mode: 0o755 });
         const shim = path.join(binDir, 'mcp-server');
         fs.symlinkSync(target, shim);
-        return { registry: createExecCapabilityRegistry({ homedir: tmpHome }), shim, target };
+        if (declare) writeDesktopConfig(tmpHome, { 'mcp-server': { command: shim } });
+        return { registry: makeRegistry(tmpHome), shim, target };
       }
 
-      it('classifies an npm-global shim that resolves outside every bin/ prefix', (t) => {
+      it('admits an npm-global shim whose target is outside every bin/ prefix', (t) => {
         const { registry: reg, shim } = withShim(t, '.local/lib/node_modules/pkg/dist/index.js');
         const result = reg.resolve(shim, ['--stdio']);
-        assert.ok(result, 'a shim under .local/bin must resolve even when its target is not');
+        assert.ok(result, 'a declared shim must resolve even when its target sits elsewhere');
         assert.strictEqual(result.capabilityId, 'user-mcp');
       });
 
-      it('spawns the configured shim rather than its realpath', (t) => {
+      it('matches either spelling: declaration names the shim, spawn names the target', (t) => {
+        const { registry: reg, target } = withShim(t, '.local/lib/node_modules/pkg/dist/index.js');
+        const result = reg.resolve(target, []);
+        assert.ok(result, 'the realpath of a declared shim names the same file and must match');
+        assert.strictEqual(result.capabilityId, 'user-mcp');
+      });
+
+      it('spawns the path as requested rather than its realpath', (t) => {
         const { registry: reg, shim, target } = withShim(t, '.local/lib/node_modules/pkg/dist/index.js');
         const result = reg.resolve(shim, []);
         assert.strictEqual(result.cmd, shim,
@@ -309,53 +346,100 @@ describe('exec_capability_registry', () => {
         assert.notStrictEqual(result.cmd, target);
       });
 
-      // The widening this change makes, pinned explicitly so it reads as a
-      // policy decision rather than an accident: before, classification ran on
-      // the realpath, so a shim whose target sat outside every prefix was
-      // blocked -- which is the npm-global case behind #164. It grants no
-      // capability that writing an executable into the same prefix didn't
-      // already grant.
-      it('admits a shim whose target lies outside every prefix', (t) => {
+      // The tightening, stated as a test: sitting in an allowlisted directory
+      // used to be sufficient and no longer is. This is the case the old
+      // location rule admitted and a declaration-based rule refuses.
+      it('refuses an undeclared executable sitting in ~/.local/bin', (t) => {
         const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-execreg-'));
         t.after(() => fs.rmSync(tmpHome, { recursive: true, force: true }));
         const binDir = path.join(tmpHome, '.local', 'bin');
-        const outside = path.join(tmpHome, 'opt', 'vendor', 'server');
         fs.mkdirSync(binDir, { recursive: true });
-        fs.mkdirSync(path.dirname(outside), { recursive: true });
-        fs.writeFileSync(outside, '#!/bin/sh\n', { mode: 0o755 });
-        const shim = path.join(binDir, 'srv');
-        fs.symlinkSync(outside, shim);
-
-        const reg = createExecCapabilityRegistry({ homedir: tmpHome });
-        assert.strictEqual(reg.resolve(outside, []), null,
-          'the target on its own is still outside every prefix and stays blocked');
-        const viaShim = reg.resolve(shim, []);
-        assert.ok(viaShim, 'reaching it through a shim the user placed under a prefix is admitted');
-        assert.strictEqual(viaShim.capabilityId, 'user-mcp');
+        const stray = path.join(binDir, 'stray');
+        fs.writeFileSync(stray, '#!/bin/sh\n', { mode: 0o755 });
+        writeDesktopConfig(tmpHome, {});
+        assert.strictEqual(makeRegistry(tmpHome).resolve(stray, []), null,
+          'location is no longer sufficient; only a declared command is admitted');
       });
 
-      it('still blocks a path under no prefix at all', (t) => {
+      // The loosening, equally deliberate: a declaration outside every prefix is
+      // honoured, because the user named it.
+      it('admits a declared server that no prefix covers', (t) => {
         const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-execreg-'));
         t.after(() => fs.rmSync(tmpHome, { recursive: true, force: true }));
-        const stray = path.join(tmpHome, 'somewhere', 'else', 'binary');
-        fs.mkdirSync(path.dirname(stray), { recursive: true });
-        fs.writeFileSync(stray, '#!/bin/sh\n', { mode: 0o755 });
-        const reg = createExecCapabilityRegistry({ homedir: tmpHome });
-        assert.strictEqual(reg.resolve(stray, []), null);
+        const vendored = path.join(tmpHome, 'opt', 'vendor', 'server');
+        fs.mkdirSync(path.dirname(vendored), { recursive: true });
+        fs.writeFileSync(vendored, '#!/bin/sh\n', { mode: 0o755 });
+        writeDesktopConfig(tmpHome, { vendor: { command: vendored } });
+        const result = makeRegistry(tmpHome).resolve(vendored, []);
+        assert.ok(result, 'a declared command is admitted wherever the user put it');
+        assert.strictEqual(result.capabilityId, 'user-mcp');
       });
 
-      it('blocks a dangling shim (target must exist)', (t) => {
+      it('reads declarations from .claude.json, including per-project servers', (t) => {
+        const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-execreg-'));
+        t.after(() => fs.rmSync(tmpHome, { recursive: true, force: true }));
+        const projectRoot = path.join(tmpHome, 'work', 'proj');
+        const server = path.join(tmpHome, 'tools', 'proj-mcp');
+        fs.mkdirSync(projectRoot, { recursive: true });
+        fs.mkdirSync(path.dirname(server), { recursive: true });
+        fs.writeFileSync(server, '#!/bin/sh\n', { mode: 0o755 });
+        fs.writeFileSync(path.join(tmpHome, '.claude.json'), JSON.stringify({
+          projects: { [projectRoot]: { mcpServers: { proj: { command: server } } } },
+        }), 'utf8');
+        const result = makeRegistry(tmpHome).resolve(server, []);
+        assert.ok(result, 'per-project declarations in .claude.json must count');
+        assert.strictEqual(result.capabilityId, 'user-mcp');
+      });
+
+      it('reads declarations from a project .mcp.json', (t) => {
+        const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-execreg-'));
+        t.after(() => fs.rmSync(tmpHome, { recursive: true, force: true }));
+        const projectRoot = path.join(tmpHome, 'work', 'proj');
+        const server = path.join(tmpHome, 'tools', 'file-mcp');
+        fs.mkdirSync(projectRoot, { recursive: true });
+        fs.mkdirSync(path.dirname(server), { recursive: true });
+        fs.writeFileSync(server, '#!/bin/sh\n', { mode: 0o755 });
+        fs.writeFileSync(path.join(tmpHome, '.claude.json'), JSON.stringify({
+          projects: { [projectRoot]: {} },
+        }), 'utf8');
+        fs.writeFileSync(path.join(projectRoot, '.mcp.json'), JSON.stringify({
+          mcpServers: { files: { command: server } },
+        }), 'utf8');
+        const result = makeRegistry(tmpHome).resolve(server, []);
+        assert.ok(result, 'project-scoped .mcp.json declarations must count');
+        assert.strictEqual(result.capabilityId, 'user-mcp');
+      });
+
+      it('blocks a dangling declaration (target must exist)', (t) => {
         const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-execreg-'));
         t.after(() => fs.rmSync(tmpHome, { recursive: true, force: true }));
         const binDir = path.join(tmpHome, '.local', 'bin');
         fs.mkdirSync(binDir, { recursive: true });
         const shim = path.join(binDir, 'gone');
         fs.symlinkSync(path.join(tmpHome, 'never', 'existed'), shim);
-        const reg = createExecCapabilityRegistry({ homedir: tmpHome });
-        assert.strictEqual(reg.resolve(shim, []), null);
+        writeDesktopConfig(tmpHome, { gone: { command: shim } });
+        assert.strictEqual(makeRegistry(tmpHome).resolve(shim, []), null);
       });
 
-      it('covers all previously allowed user dirs', () => {
+      it('picks up a newly declared server without a restart', (t) => {
+        const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-execreg-'));
+        t.after(() => fs.rmSync(tmpHome, { recursive: true, force: true }));
+        const server = path.join(tmpHome, 'tools', 'late-mcp');
+        fs.mkdirSync(path.dirname(server), { recursive: true });
+        fs.writeFileSync(server, '#!/bin/sh\n', { mode: 0o755 });
+        writeDesktopConfig(tmpHome, {});
+        const reg = makeRegistry(tmpHome);
+        assert.strictEqual(reg.resolve(server, []), null, 'undeclared to begin with');
+        writeDesktopConfig(tmpHome, { late: { command: server } });
+        const after = reg.resolve(server, []);
+        assert.ok(after, 'editing the config must take effect without relaunching');
+        assert.strictEqual(after.capabilityId, 'user-mcp');
+      });
+
+      // USER_MCP_PREFIXES no longer admits anything; it only shapes the refusal
+      // message. Kept pinned so the list doesn't get deleted as dead weight and
+      // take the actionable "declare it in mcpServers" hint with it.
+      it('keeps the user dir list for diagnostics only', () => {
         const home = os.homedir();
         const expectedPrefixes = [
           home + '/.local/bin/',

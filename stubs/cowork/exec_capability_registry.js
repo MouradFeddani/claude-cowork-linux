@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { createUserMcpAllowlist } = require('./user_mcp_allowlist');
 
 function existsExecutable(p) {
   try {
@@ -40,6 +41,8 @@ function realpathSafe(p) {
 function createExecCapabilityRegistry({
   homedir = os.userInfo().homedir,
   resolveClaudeBinaryPath = null,
+  env = process.env,
+  userMcpAllowlist = null,
 } = {}) {
   var home;
   try { home = fs.realpathSync(homedir); } catch (e) {
@@ -112,12 +115,23 @@ function createExecCapabilityRegistry({
     return null;
   }
 
-  function underUserPrefix(p) {
+  // USER_MCP_PREFIXES no longer admits anything. It survives only to recognise
+  // "this looks like a user-installed binary" so a refusal can say something
+  // more useful than BLOCKED.
+  function looksUserInstalled(p) {
     if (!p) return false;
     for (var i = 0; i < USER_MCP_PREFIXES.length; i++) {
       if (p.startsWith(USER_MCP_PREFIXES[i])) return true;
     }
-    return false;
+    return p.startsWith(home + '/');
+  }
+
+  var _allowlist = userMcpAllowlist;
+  function allowlist() {
+    if (_allowlist === null) {
+      _allowlist = createUserMcpAllowlist({ homedir: home, env: env });
+    }
+    return _allowlist;
   }
 
   function resolve(binaryPath, args) {
@@ -149,31 +163,37 @@ function createExecCapabilityRegistry({
       }
     }
 
-    // user-mcp: a binary the user installed under their own home. Classified on
-    // the requested path OR its realpath, because package- and version-manager
-    // shims symlink out of `bin/` into a versioned lib/ or venv directory --
-    // npm-global lands in lib/node_modules/, and nvm, pipx, pnpm and volta each
-    // land somewhere different again. Resolving first walked all of those out of
-    // every prefix, so a legitimately configured MCP server read as unresolvable
-    // (#164). Enumerating the landing directories would only chase that list.
+    // user-mcp: a binary the USER DECLARED as an MCP server, matched exactly.
     //
-    // This is a deliberate widening, not a no-op. A shim under a user prefix now
-    // resolves even when its target lies outside every prefix -- exactly the
-    // npm-global case, and blocked before. It hands an attacker no capability
-    // they lacked, because write access to a user prefix already admitted an
-    // executable dropped there directly; a symlink is a slower way to do what a
-    // plain file already did. What it does not touch is the system classes:
-    // those are still matched on the realpath above, so a user symlink cannot
-    // masquerade as /usr/bin/git.
-    if (underUserPrefix(lexical)) {
-      // Spawn the shim the user configured rather than its realpath: argv[0] and
-      // any wrapper semantics belong to the shim, and the realpath is a path the
+    // This used to admit anything under ~/.local/bin and a handful of sibling
+    // directories. That is an allowlist of locations, which is unbounded in what
+    // it permits -- the user can put anything there, and package managers
+    // symlink out of it into directories the list never named, which is how a
+    // legitimately configured server came to read as unresolvable in #164.
+    // Neither widening the prefixes nor accepting the pre-symlink path fixes the
+    // shape; both just move where the boundary is vague.
+    //
+    // The authority is the user's own declaration. Matching on it is strictly
+    // tighter than the location rule in both directions: a server declared at
+    // /opt/vendor/mcp is admitted though no prefix covers it, and a stray
+    // executable dropped in ~/.local/bin is refused though the prefix does.
+    //
+    // Either spelling matches, since a declaration may name the shim while the
+    // spawn names the target or vice versa -- both name the same file.
+    if (allowlist().has(lexical) || allowlist().has(real)) {
+      // Spawn the path as requested rather than its realpath: argv[0] and any
+      // wrapper semantics belong to the shim, and the realpath is a path the
       // user never named. Executability is identical either way -- access(X_OK)
       // follows symlinks -- so this is about intent, not about the exec bit.
-      return { capabilityId: 'user-mcp', cmd: lexical, args: args || [] };
+      return { capabilityId: 'user-mcp', cmd: lexical || real, args: args || [] };
     }
-    if (underUserPrefix(real)) {
-      return { capabilityId: 'user-mcp', cmd: real, args: args || [] };
+
+    if (looksUserInstalled(lexical) || looksUserInstalled(real)) {
+      console.warn(
+        '[exec-capability] BLOCKED (not a declared MCP server): ' + binaryPath +
+        ' -- add it to "mcpServers" in claude_desktop_config.json or .claude.json to allow it.'
+      );
+      return null;
     }
 
     console.warn('[exec-capability] BLOCKED: ' + binaryPath);
@@ -262,6 +282,9 @@ function createExecCapabilityRegistry({
     resolveCapability: resolveCapability,
     resolveDisclaimerCommand: resolveDisclaimerCommand,
     invalidateClaudeCache: invalidateClaudeCache,
+    // Diagnostics: "why is my MCP server blocked?" is answered by comparing the
+    // refused path against what the config actually declares.
+    listDeclaredMcpCommands: function () { return allowlist().snapshot(); },
     SYSTEM_PATHS: SYSTEM_PATHS,
     USER_MCP_PREFIXES: USER_MCP_PREFIXES,
     SYSTEM_CMD_PREFIXES: SYSTEM_CMD_PREFIXES,
