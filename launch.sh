@@ -246,6 +246,39 @@ patch_index "Patching MCP node-host asar paths to use getAppPath()..." \
   '[A-Za-z0-9_$]+\.app\.isPackaged\?[A-Za-z0-9_$.]+\.join\(process\.resourcesPath,["`]app\.asar["`]' \
   's/([A-Za-z0-9_$]+)\.app\.isPackaged\?([A-Za-z0-9_$.]+)\.join\(process\.resourcesPath,["`]app\.asar["`]/\1.app.isPackaged?\2.join(\1.app.getAppPath()/g'
 
+# Catch-all for the same join with NO isPackaged guard (reported by @shawnyeager
+# on #167). shellPathWorker.js is resolved unconditionally:
+#   function v(){return o.default.join(process.resourcesPath,`app.asar`,`.vite`,`build`,`shell-path-worker`,`shellPathWorker.js`)}
+# The guarded pass above can't reach it, so it keeps resolving through the
+# overridden process.resourcesPath (~/.config/Claude/cowork-resources), which has
+# no app.asar — breaking login-shell PATH priming.
+#
+# This must run AFTER the guarded pass: that pass has already rewritten its own
+# sites away from `process.resourcesPath,app.asar`, so this only touches what it
+# missed. The main-process chunks are CJS with require in scope, so require the
+# app lazily rather than assuming a minified electron binding is in scope here.
+patch_index "Patching unguarded resourcesPath+app.asar joins to use getAppPath()..." \
+  'process\.resourcesPath,["`]app\.asar["`]' \
+  's/process\.resourcesPath,["`]app\.asar["`]/require("electron").app.getAppPath()/g'
+
+# Syntax-check every patched chunk before repacking. We now rewrite ~300 files
+# instead of 2, and patch_host_platform in particular is markerless and subs
+# globally, so a malformed rewrite would otherwise surface as a blank window at
+# launch with no clue which pass produced it. node --check is cheap next to the
+# repack and names the offending file. Warn rather than abort: a syntax error in
+# a chunk we never patched shouldn't block a launch that would otherwise work.
+if command -v node >/dev/null 2>&1; then
+  _bad=0
+  for _f in "${INDEX_TARGETS[@]}"; do
+    [ -f "$_f" ] || continue
+    if ! node --check "$_f" 2>/dev/null; then
+      echo "WARNING: $_f fails node --check after patching" >&2
+      _bad=$((_bad + 1))
+    fi
+  done
+  [ "$_bad" -gt 0 ] && echo "WARNING: $_bad patched chunk(s) failed syntax check" >&2
+fi
+
 # Only repack if stub is newer than asar (or asar doesn't exist)
 # Repack if any file in the extracted tree is newer than the cached asar.
 _needs_repack=false

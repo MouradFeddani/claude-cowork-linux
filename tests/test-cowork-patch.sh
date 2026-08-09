@@ -46,8 +46,12 @@ assert_parses() {
   if node --check "$1" 2>/dev/null; then pass "$2"; else fail "$2 (node --check failed)"; fi
 }
 
-# The exact discovery used by install.sh apply_patches and launch.sh.
-discover_chunks() { grep -oE 'index\.chunk-[A-Za-z0-9_-]+\.js' "$1" | sort -u; }
+# The exact discovery used by install.sh apply_patches and launch.sh: glob the
+# build dir, don't follow the shim's require()s. Chunks require() each other
+# transitively, so the shim names only a subset (131 of 333 on 1.26832.0), and
+# a second index2.chunk-* series now carries the platform gate. Takes the build
+# directory, not the shim, so it mirrors the shipped mechanism.
+discover_chunks() { find "$1" -maxdepth 1 -name 'index*.chunk-*.js' -type f -printf '%f\n' 2>/dev/null | sort; }
 
 # Write a chunk exercising every patch site, using identifiers that are NOT the
 # values any older hardcoded pattern used (function qZ9/var r; validator $m/arg
@@ -68,6 +72,37 @@ function handoff(){mB.app.invalidateCurrentActivity();mB.app.setUserActivity(qq,
 function wrapSpawn(t){return process.platform!=="darwin"?t:{cmd:rpt(),args:[t.cmd,...t.args]}}
 const res=kk.app.isPackaged?process.resourcesPath:someFallback;
 const host=kk.app.isPackaged?jn.join(process.resourcesPath,"app.asar","mcp-runtime","nodeHost.js"):jn.join(kk.app.getAppPath(),"nodeHost.js");
+EOF
+}
+
+# Same sites as write_patch_fixture, in the shapes 1.26832.0 actually emits.
+# This is the regression that motivated #166 and it is invisible to a
+# double-quoted fixture: the minifier moved to backtick template literals, so
+# every pattern anchored on `"` missed and EVERY patch silently no-opped while
+# install.sh still reported success. Without this fixture someone can re-narrow
+# ["`] back to " tomorrow and the suite stays green.
+#
+# Also covers the smaller shape changes that landed with it: `let` instead of
+# `const` in the gate, a bare `throw Error(` instead of `throw new Error(`, and
+# minified values that gained dots and negations (r.default, !1) where the old
+# patterns assumed [A-Za-z0-9_$]+.
+write_patch_fixture_backtick() {
+  cat > "$1" <<'EOF'
+"use strict";
+function ke(){let t=process.platform;if(t!==`darwin`&&t!==`win32`)return{status:`unsupported`,reason:`Cowork is not currently supported on ${a.it()}`,unsupportedCode:`unsupported_platform`};return{status:`supported`}}
+const gate=ke();
+function checkOrigin(n){if(!$m(n))throw Error(`Incoming "choose" call on interface "LocalExecConsent" from '${n.senderFrame?.url}' did not pass origin validation`)}
+function hostPlat(e){if(process.platform===`linux`)return e===`arm64`?`linux-arm64`:`linux-x64`;throw Error(`Unsupported platform: ${process.platform}-${e}`)}
+function extInstall(){if(process.platform!==`darwin`)return{status:E.i.Error,error:`Unsupported platform: ${process.platform}. Only macOS is supported.`};return{status:0}}
+const winOpts={minWidth:600,titleBarStyle:`hidden`,titleBarOverlay:!1,trafficLightPosition:Xe.o,show:t,webPreferences:{}};
+const aboutOpts={titleBarStyle:`hiddenInset`,autoHideMenuBar:!0,skipTaskbar:!0};
+function guard(){return Zq.protocol===`file:`&&r.default.app.isPackaged===!0}
+function buildArgs(){Xp.push(`--effort`,this.options.effort)}
+function handoff(){mB.app.invalidateCurrentActivity();mB.app.setUserActivity(qq,{})}
+function wrapSpawn(t){return process.platform!==`darwin`?t:{cmd:rpt(),args:[t.cmd,...t.args]}}
+const res=T.app.isPackaged?process.resourcesPath:someFallback;
+function c(e,t){let n=i.app.isPackaged?r.default.join(process.resourcesPath,`app.asar`):i.app.getAppPath();return r.default.join(n,`.vite`)}
+function v(){return o.default.join(process.resourcesPath,`app.asar`,`.vite`,`build`,`shell-path-worker`,`shellPathWorker.js`)}
 EOF
 }
 
@@ -115,17 +150,34 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-section "3. index.js -> chunk discovery (install.sh / launch.sh)"
+section "3. build-dir chunk discovery (install.sh / launch.sh)"
 # ---------------------------------------------------------------------------
 mkdir -p "$TMP/build"
 printf '"use strict";\nrequire("./index.chunk-V9ybBkRT.js");\n' > "$TMP/build/index.js"
 : > "$TMP/build/index.chunk-V9ybBkRT.js"
-found="$(discover_chunks "$TMP/build/index.js")"
-[[ "$found" == "index.chunk-V9ybBkRT.js" ]] && pass "split-entry: chunk discovered from shim" \
-  || fail "split-entry: chunk discovered from shim (got: '$found')"
-# Single-entry build (no shim) -> discovery finds nothing (clean no-op)
-printf '"use strict";var x=1;\n' > "$TMP/build/single.js"
-[[ -z "$(discover_chunks "$TMP/build/single.js")" ]] && pass "single-entry: no chunk discovered (backward compatible)" \
+# Named by the shim -> must be found.
+found="$(discover_chunks "$TMP/build")"
+[[ "$found" == *"index.chunk-V9ybBkRT.js"* ]] && pass "split-entry: shim-named chunk discovered" \
+  || fail "split-entry: shim-named chunk discovered (got: '$found')"
+# The index2 series carries the platform gate on 1.26832.0.
+: > "$TMP/build/index2.chunk-CQIegP9t.js"
+found="$(discover_chunks "$TMP/build")"
+[[ "$found" == *"index2.chunk-CQIegP9t.js"* ]] && pass "index2 series discovered (gate lives here on 1.26832.0)" \
+  || fail "index2 series discovered (got: '$found')"
+# Required transitively by another chunk, never named by the shim: this is the
+# case that made the --effort patch silently no-op before the glob switch.
+: > "$TMP/build/index2.chunk-Cqfh0Vpp.js"
+found="$(discover_chunks "$TMP/build")"
+[[ "$found" == *"index2.chunk-Cqfh0Vpp.js"* ]] && pass "transitively-required chunk discovered (not named by shim)" \
+  || fail "transitively-required chunk discovered (got: '$found')"
+# Non-chunk files in the same dir must not be picked up.
+: > "$TMP/build/mainWindow.js"
+[[ "$(discover_chunks "$TMP/build")" != *"mainWindow.js"* ]] && pass "non-chunk files ignored" \
+  || fail "non-chunk files ignored"
+# Single-entry build (no chunks) -> discovery finds nothing (clean no-op)
+mkdir -p "$TMP/build_single"
+printf '"use strict";var x=1;\n' > "$TMP/build_single/index.js"
+[[ -z "$(discover_chunks "$TMP/build_single")" ]] && pass "single-entry: no chunk discovered (backward compatible)" \
   || fail "single-entry: no chunk discovered"
 
 # ---------------------------------------------------------------------------
@@ -204,6 +256,68 @@ if grep -q 'enable-cowork.py" "$_t"' "$REPO_ROOT/PKGBUILD"; then
   pass "PKGBUILD: runs enable-cowork.py across every discovered target"
 else
   fail "PKGBUILD: enable-cowork.py not run per-target (regressed to index.js only?)"
+fi
+
+# ---------------------------------------------------------------------------
+section "6. backtick-literal bundle (asar 1.26832.0 shapes, issue #166)"
+# ---------------------------------------------------------------------------
+# Everything above uses a double-quoted fixture. 1.26832.0 emits backtick
+# template literals instead, which made every pattern miss and every patch
+# no-op silently. Re-run both toolchains against a fixture in those shapes so
+# a future re-narrowing of ["`] back to " fails here instead of shipping.
+BTCHUNK="$TMP/backtick_chunk.js"
+write_patch_fixture_backtick "$BTCHUNK"
+
+# enable-cowork.py: the platform gate must be found despite `let` + backticks.
+if python3 "$REPO_ROOT/enable-cowork.py" "$BTCHUNK" >/dev/null 2>&1; then
+  pass "backtick: enable-cowork.py finds the platform gate (exit 0)"
+else
+  fail "backtick: enable-cowork.py finds the platform gate (exit 0)"
+fi
+assert_grep "$BTCHUNK" 'function ke\(\)\{return\{status:"supported"\}\}' "backtick: gate returns supported"
+# Bare `throw Error(` — the old pattern required `new`.
+refute_grep "$BTCHUNK" 'throw Error\(`Unsupported platform'          "backtick: getHostPlatform throw rewritten"
+assert_grep "$BTCHUNK" 'did not pass origin validation'              "backtick: IPC guard site still present"
+assert_grep "$BTCHUNK" 'startsWith\("file://"\)'                    "backtick: IPC origin guard exempts file://"
+refute_grep "$BTCHUNK" 'error:`Unsupported platform'                 "backtick: return-style platform gate neutralized"
+assert_parses "$BTCHUNK" "backtick: chunk parses after enable-cowork.py"
+
+# The fixture above is found via the exact `ke()` entry in KNOWN_PATTERNS, so it
+# does NOT exercise PLATFORM_GATE_RE. Minified names rotate every build, so the
+# regex fallback is what actually carries the next one — give it a gate name
+# that is in no known-pattern list, still backtick/`let` shaped.
+BTGATE="$TMP/backtick_unknown_gate.js"
+cat > "$BTGATE" <<'EOF'
+"use strict";
+function zQ7x(){let q=process.platform;if(q!==`darwin`&&q!==`win32`)return{status:`unsupported`,reason:`nope`};return{status:`supported`}}
+EOF
+if python3 "$REPO_ROOT/enable-cowork.py" "$BTGATE" >/dev/null 2>&1; then
+  pass "backtick: regex fallback finds an unknown-named gate"
+else
+  fail "backtick: regex fallback finds an unknown-named gate"
+fi
+assert_grep "$BTGATE" 'function zQ7x\(\)\{return\{status:"supported"\}\}' "backtick: unknown-named gate rewritten"
+assert_parses "$BTGATE" "backtick: unknown-named gate parses after patching"
+
+# launch.sh patch_index passes against the same shapes.
+if [[ -f "$BLOCK" ]]; then
+  BTL="$TMP/backtick_launch.js"
+  write_patch_fixture_backtick "$BTL"
+  ( INDEX_TARGETS=("$BTL"); source "$BLOCK" ) >/dev/null 2>&1
+  refute_grep "$BTL" 'titleBarStyle:`hidden`'          "backtick: main-window titlebar removed (!1 / dotted value)"
+  refute_grep "$BTL" 'titleBarStyle:`hiddenInset`'     "backtick: about-window titlebar removed"
+  assert_grep "$BTL" 'return Zq\.protocol==="file:"\}' "backtick: origin isPackaged dropped (r.default arg)"
+  assert_grep "$BTL" 'this\.options\.effort==="xhigh"\?"max"' "backtick: --effort xhigh -> max"
+  refute_grep "$BTL" 'T\.app\.isPackaged?process\.resourcesPath:'    "backtick: resourcesPath fallback forced"
+  assert_grep "$BTL" 'i\.app\.isPackaged\?r\.default\.join\(i\.app\.getAppPath\(\)' "backtick: guarded MCP join uses getAppPath()"
+  # Unguarded join (@shawnyeager, #167): no isPackaged, so the guarded pass
+  # can't reach it and shellPathWorker.js resolves through the overridden
+  # resourcesPath. The catch-all pass must run after the guarded one.
+  refute_grep "$BTL" 'process\.resourcesPath,`app\.asar`' "backtick: unguarded shellPathWorker join rewritten"
+  assert_grep "$BTL" 'shell-path-worker'                  "backtick: shellPathWorker site still resolves a path"
+  assert_grep "$BTL" 'function wrapSpawn\(t\)\{return process\.platform!==`darwin`\?t:\{cmd:rpt\(\)' \
+              "backtick: disclaimer wrap site left intact (#132)"
+  assert_parses "$BTL" "backtick: chunk parses after launch.sh patches"
 fi
 
 # ---------------------------------------------------------------------------
