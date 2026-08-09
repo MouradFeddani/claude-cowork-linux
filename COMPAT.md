@@ -38,9 +38,23 @@ build plus its checksum, so that if the latest CDN release regresses you
 can fetch the last tested version yourself and verify the bytes match
 what was exercised.
 
-| Asar     | CDN URL (Anthropic)                                                                                   | SHA-256 |
-|:---------|:------------------------------------------------------------------------------------------------------|:--------|
-| 1.6259.1 | `https://downloads.claude.ai/releases/darwin/universal/1.6259.1/Claude-5095e7dddcba4ca974d351ee397e17d204814f07.dmg` | `98c9de8dde01f083b73e7ef08cfaf7adfd2c1386e88d2995b4202dea1a31e898` |
+| Asar      | CDN URL (Anthropic)                                                                                   | SHA-256 |
+|:----------|:------------------------------------------------------------------------------------------------------|:--------|
+| 1.6259.1  | `https://downloads.claude.ai/releases/darwin/universal/1.6259.1/Claude-5095e7dddcba4ca974d351ee397e17d204814f07.dmg` | `98c9de8dde01f083b73e7ef08cfaf7adfd2c1386e88d2995b4202dea1a31e898` |
+| 1.19367.0 | `https://downloads.claude.ai/releases/darwin/universal/1.19367.0/Claude-1a5be1fbf83d1832486e03a667557c18f0a0ec7a.dmg` | `<pending>` |
+
+The URL for each release embeds a per-release hash, so it cannot be
+constructed from the version number -- a build has a pinnable URL only if
+someone recorded it here. `install.sh` reads this table: when you answer
+`t` ("show instructions for installing the tested version") at the
+download prompt, it prints the recorded URL and checksum for
+`LAST_TESTED_ASAR_VERSION` directly, and tells you plainly when there is
+no row rather than printing a placeholder you cannot fill in (#165).
+
+The 1.19367.0 URL was contributed in #165 and has not been re-fetched or
+checksummed by a maintainer; it is a `.dmg`, so the LZFSE note below may
+apply. If you download it, please compute the SHA-256 and open a PR
+filling in the `<pending>` cell.
 
 To pin and verify a tested version:
 
@@ -69,7 +83,17 @@ not an endorsement to redistribute. If a recorded SHA-256 shows
 ## Reporting a tested version
 
 Open a PR that bumps `LAST_TESTED_ASAR_VERSION` (the HTML comment line
-above) and adds a row to the table. In the PR body, include:
+above), adds a row to the tested-versions table, and **adds the archive
+you tested to the pinning table too** -- the CDN URL you downloaded from,
+plus `sha256sum` of that exact file.
+
+Without that row the next person has a version number recorded as working
+and no way to obtain it: the URL is not derivable from the version, and
+`install.sh`'s "install the tested version" path has nothing to print.
+That was #165. `tests/test-compat-pins.sh` checks that whatever
+`LAST_TESTED_ASAR_VERSION` points at has a pinning row.
+
+In the PR body, include:
 
 1. Distro and desktop environment (e.g. "Arch Linux + Hyprland (Wayland)").
 2. Electron version (`electron --version` from your install).

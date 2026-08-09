@@ -135,6 +135,65 @@ compat_read_last_tested() {
     printf '1.6259.1'
 }
 
+compat_read_pin() {
+    # compat_read_pin <version> <url|sha256> [compat_file]
+    #
+    # Reads one cell out of the "Pinning a tested version" table in COMPAT.md:
+    # the Anthropic CDN URL, or the recorded SHA-256, for <version>. Prints
+    # nothing and returns 1 when the version has no row yet, or when the cell
+    # is still the `<pending>` placeholder.
+    #
+    # The CDN URL embeds a per-release hash, so it cannot be derived from the
+    # version number -- it only exists if someone recorded it. Reading the
+    # table here means the installer can print the real URL instead of telling
+    # the user to go find it (issue #165).
+    local version="$1" field="$2" compat_file="${3:-}"
+    [[ -n "$version" ]] || return 1
+
+    # Resolve the column explicitly: treating "anything that isn't sha256" as
+    # the URL would turn a caller typo into a plausible-looking wrong answer,
+    # which is the one failure mode this whole helper exists to avoid.
+    local col
+    case "$field" in
+        url)    col=3 ;;
+        sha256) col=4 ;;
+        *)      printf 'compat_read_pin: unknown field %s (want url|sha256)\n' "${field:-<empty>}" >&2
+                return 2 ;;
+    esac
+
+    if [[ -z "$compat_file" ]]; then
+        compat_file="$(dirname "$0")/COMPAT.md"
+    fi
+    [[ -f "$compat_file" ]] || return 1
+
+    local value
+    value=$(awk -F'|' -v want="$version" -v col="$col" '
+        /^\|/ {
+            key = $2
+            gsub(/[[:space:]`]/, "", key)
+            if (key != want) next
+            if (NF <= 3) next
+            url = $3
+            gsub(/[[:space:]`]/, "", url)
+            # Both tables in COMPAT.md are keyed by version, so match on the
+            # shape of the row rather than its position: only the pinning
+            # table carries a URL in column 3 (the status table has [OK] and
+            # a date there).
+            if (url !~ /^https?:\/\//) next
+            if (col == 3) { print url; exit }
+            if (NF <= 4) next
+            cell = $4
+            gsub(/[[:space:]`]/, "", cell)
+            # `<pending>` (or any other placeholder) is not a usable value.
+            if (cell == "" || substr(cell, 1, 1) == "<") next
+            print cell
+            exit
+        }' "$compat_file")
+
+    [[ -n "$value" ]] || return 1
+    printf '%s' "$value"
+}
+
 compat_version_is_newer() {
     # Returns 0 (true) if $1 > $2 by semver-ish ordering (sort -V).
     # Returns 1 otherwise (equal or older).
@@ -471,21 +530,51 @@ get_archive() {
                     # Tell the user how to get the tested version. We do NOT
                     # download or redistribute the archive ourselves -- the
                     # user fetches it from Anthropic's CDN and passes it to us.
-                    # COMPAT.md records the CDN URL + SHA-256 for tested builds.
+                    # COMPAT.md records the CDN URL + SHA-256 for tested builds;
+                    # print the recorded ones inline rather than sending the
+                    # user off to find the row by hand (issue #165).
+                    local pin_url="" pin_sha="" pin_file
+                    pin_url=$(compat_read_pin "$last_tested" url "$script_dir/COMPAT.md") || pin_url=""
+                    pin_sha=$(compat_read_pin "$last_tested" sha256 "$script_dir/COMPAT.md") || pin_sha=""
+                    # Keep the archive's real extension: 7z reads both, but a
+                    # .zip saved as .dmg is confusing to anyone debugging later.
+                    pin_file="Claude-${last_tested}.dmg"
+                    [[ "$pin_url" == *.zip ]] && pin_file="Claude-${last_tested}.zip"
                     echo ""
                     echo "  To install the tested version ($last_tested):"
                     echo ""
-                    echo "  1. COMPAT.md lists the Anthropic CDN URL and SHA-256 for"
-                    echo "     tested builds under \"Pinning a tested version\":"
-                    echo "     https://github.com/johnzfitch/claude-cowork-linux/blob/master/COMPAT.md"
-                    echo ""
-                    echo "  2. Download it from that URL and verify the checksum"
-                    echo "     (-o names the file predictably; -fLO keeps the hash name):"
-                    echo "     curl -fL -o Claude-${last_tested}.dmg \"<CDN URL from COMPAT.md>\""
-                    echo "     sha256sum Claude-${last_tested}.dmg"
-                    echo ""
-                    echo "  3. Re-run the installer with the verified file:"
-                    echo "     CLAUDE_ARCHIVE=\"\$PWD/Claude-${last_tested}.dmg\" bash install.sh"
+                    if [[ -n "$pin_url" ]]; then
+                        echo "  1. Download it from Anthropic's CDN (-o names the file"
+                        echo "     predictably; -fLO would keep the long hash name):"
+                        echo "     curl -fL -o $pin_file \\"
+                        echo "       \"$pin_url\""
+                        echo ""
+                        if [[ -n "$pin_sha" ]]; then
+                            echo "  2. Verify the bytes match what was tested:"
+                            echo "     echo \"$pin_sha  $pin_file\" | sha256sum -c"
+                        else
+                            echo "  2. No SHA-256 is recorded for $last_tested yet. Compute it and"
+                            echo "     open a PR filling it into COMPAT.md so the next person can verify:"
+                            echo "     sha256sum $pin_file"
+                        fi
+                        echo ""
+                        echo "  3. Re-run the installer with the archive:"
+                        echo "     CLAUDE_ARCHIVE=\"\$PWD/$pin_file\" bash install.sh"
+                    else
+                        # No row recorded. The CDN URL embeds a per-release hash,
+                        # so we cannot construct one -- say so instead of printing
+                        # a placeholder the user has no way to fill in.
+                        echo "  COMPAT.md has no recorded CDN URL for $last_tested, and the URL"
+                        echo "  embeds a per-release hash that cannot be derived from the version"
+                        echo "  number. Options:"
+                        echo ""
+                        echo "  - Check the \"Pinning a tested version\" table for a nearby build:"
+                        echo "    https://github.com/johnzfitch/claude-cowork-linux/blob/master/COMPAT.md"
+                        echo "  - If you already have the archive, point the installer at it"
+                        echo "    (.zip or .dmg -- 7z reads both):"
+                        echo "    CLAUDE_ARCHIVE=/path/to/Claude.zip bash install.sh"
+                        echo "  - If you find the URL, please open a PR adding it to that table."
+                    fi
                     echo ""
                     die "Install paused. Re-run with CLAUDE_ARCHIVE set."
                     ;;
