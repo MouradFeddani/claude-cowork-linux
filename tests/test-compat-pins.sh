@@ -92,6 +92,15 @@ assert_eq "$got" \
   "https://downloads.claude.ai/releases/darwin/universal/1.19367.0/Claude-def.dmg" \
   "url still returned when its row's sha256 is <pending>"
 
+# A misspelled field must fail loudly rather than fall through to the URL
+# column: silently answering a different question than the caller asked is the
+# failure mode this helper exists to prevent.
+if got="$(compat_read_pin 1.6259.1 sha "$FIXTURE" 2>/dev/null)"; then
+  fail "unknown field must return non-zero"
+else
+  assert_eq "$got" "" "unknown field prints nothing on stdout"
+fi
+
 # Unknown version, and the status table's own rows (same file, 4 columns, no
 # URL cell) must not produce a bogus hit.
 if compat_read_pin 9.9.9 url "$FIXTURE" >/dev/null 2>&1; then

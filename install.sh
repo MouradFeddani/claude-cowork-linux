@@ -149,13 +149,22 @@ compat_read_pin() {
     # the user to go find it (issue #165).
     local version="$1" field="$2" compat_file="${3:-}"
     [[ -n "$version" ]] || return 1
+
+    # Resolve the column explicitly: treating "anything that isn't sha256" as
+    # the URL would turn a caller typo into a plausible-looking wrong answer,
+    # which is the one failure mode this whole helper exists to avoid.
+    local col
+    case "$field" in
+        url)    col=3 ;;
+        sha256) col=4 ;;
+        *)      printf 'compat_read_pin: unknown field %s (want url|sha256)\n' "${field:-<empty>}" >&2
+                return 2 ;;
+    esac
+
     if [[ -z "$compat_file" ]]; then
         compat_file="$(dirname "$0")/COMPAT.md"
     fi
     [[ -f "$compat_file" ]] || return 1
-
-    local col=3
-    [[ "$field" == "sha256" ]] && col=4
 
     local value
     value=$(awk -F'|' -v want="$version" -v col="$col" '
@@ -561,8 +570,9 @@ get_archive() {
                         echo ""
                         echo "  - Check the \"Pinning a tested version\" table for a nearby build:"
                         echo "    https://github.com/johnzfitch/claude-cowork-linux/blob/master/COMPAT.md"
-                        echo "  - If you already have the archive, point the installer at it:"
-                        echo "    CLAUDE_ARCHIVE=/path/to/Claude.dmg bash install.sh"
+                        echo "  - If you already have the archive, point the installer at it"
+                        echo "    (.zip or .dmg -- 7z reads both):"
+                        echo "    CLAUDE_ARCHIVE=/path/to/Claude.zip bash install.sh"
                         echo "  - If you find the URL, please open a PR adding it to that table."
                     fi
                     echo ""
