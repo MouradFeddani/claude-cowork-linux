@@ -34,6 +34,33 @@ function setupPackedStubFixture(tempRoot) {
   };
 }
 
+// The registry admits a user binary only when the user declared it as an MCP
+// server, so a fixture that spawns one has to declare it the way a real install
+// would. Sitting in ~/.local/bin is no longer sufficient, by design.
+function declareMcpServer(tempHome, commandPath) {
+  const configDir = path.join(tempHome, '.config', 'Claude');
+  fs.mkdirSync(configDir, { recursive: true });
+  const configPath = path.join(configDir, 'claude_desktop_config.json');
+  let config = { mcpServers: {} };
+  try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch (_) { /* first writer */ }
+  config.mcpServers = config.mcpServers || {};
+  config.mcpServers[path.basename(commandPath)] = { command: commandPath };
+  fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
+}
+
+// Arm the registry as frame-fix-wrapper does at startup, scoped to the fixture
+// home so it reads the fixture's config rather than the developer's.
+function registryBootstrap(tempRepoRoot, tempHome) {
+  const modulePath = path.join(tempRepoRoot, 'cowork', 'exec_capability_registry.js');
+  const env = {
+    XDG_CONFIG_HOME: path.join(tempHome, '.config'),
+    CLAUDE_CONFIG_DIR: tempHome,
+    PATH: process.env.PATH || '/usr/bin:/bin',
+  };
+  return `global.__coworkExecRegistry = require(${JSON.stringify(modulePath)})`
+    + `.createExecCapabilityRegistry({ homedir: ${JSON.stringify(tempHome)}, env: ${JSON.stringify(env)} });`;
+}
+
 function runSwiftRetryHarness(options) {
   const {
     configDir,
@@ -47,9 +74,14 @@ function runSwiftRetryHarness(options) {
     workerArgs = ['--resume', 'resume-cli-session'],
   } = options;
 
+  declareMcpServer(tempHome, fakeClaudePath);
   const script = `
     const fs = require('fs');
     global.__coworkPasswdHomedir = ${JSON.stringify(tempHome)};
+    // The orchestrator has no fallback allowlist to degrade into, so an unarmed
+    // registry refuses every spawn -- the harness must exercise the same
+    // admission rule the app runs.
+    ${registryBootstrap(tempRepoRoot, tempHome)}
     const addon = require(${JSON.stringify(modulePath)});
     const resultFile = ${JSON.stringify(resultFile)};
     const outputs = [];
@@ -123,9 +155,12 @@ function runSwiftBridgeHarness(options) {
     workerArgs = ['--resume', 'legacy-cli-session', '--model', 'claude-opus-4-6'],
   } = options;
 
+  declareMcpServer(tempHome, fakeClaudePath);
   const script = `
     const fs = require('fs');
     global.__coworkPasswdHomedir = ${JSON.stringify(tempHome)};
+    // See runSwiftRetryHarness.
+    ${registryBootstrap(tempRepoRoot, tempHome)}
     global.__coworkSessionsApiRequestSync = () => {
       throw new Error('Unexpected sessions API request — orchestrator should not call API');
     };

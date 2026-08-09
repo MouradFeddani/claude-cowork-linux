@@ -832,13 +832,19 @@ try {
   console.log('[TMPDIR] os.tmpdir() patched');
   console.log('[VM_BUNDLE] Ready: ' + claudeVmBundle);
 
-  // The asar wraps all git commands with a "disclaimer" binary on macOS
-  // (Helpers/disclaimer git <args>). Since we spoof process.platform to
-  // "darwin", this codepath activates on Linux too. The binary doesn't
-  // exist in the Linux Electron distribution, causing ENOENT on every
-  // git operation (diff, status, etc). Create a transparent passthrough
-  // so the wrapper is a no-op — identical to what the asar's own
-  // non-darwin branch does (returns the command unchanged).
+  // The asar routes spawns through a "disclaimer" binary on macOS
+  // (Helpers/disclaimer <cmd> <args>) — not just git: anything reaching the
+  // bundle's spawnAsync, plus a dozen direct callsites. Since we spoof
+  // process.platform to "darwin", that codepath activates on Linux too, and
+  // the binary doesn't exist here.
+  //
+  // So we create a fail-closed stub and intercept the spawn: the interception
+  // is where the wrapper's argv is unwrapped, macOS-shaped paths are translated
+  // to their Linux equivalents, and admission is deferred to the exec
+  // capability registry. That makes this the seam through which we see the
+  // bundle's spawn decisions — see resolveDisclaimerCommand for why the wrap
+  // must not be patched out of the bundle, and why this unwrap must never grow
+  // a policy of its own.
   const disclaimerDir = path.join(path.dirname(process.resourcesPath), 'Helpers');
   const disclaimerBin = path.join(disclaimerDir, 'disclaimer');
   {

@@ -192,6 +192,16 @@ patch_index "Patching --effort xhigh -> max..." \
   '[A-Za-z0-9_$]+\.push\("--effort",this\.options\.effort\)' \
   's/([A-Za-z0-9_$]+)\.push\("--effort",this\.options\.effort\)/\1.push("--effort",this.options.effort==="xhigh"?"max":this.options.effort)/g'
 
+# NOTE: do not "simplify" the disclaimer wrapper away by patching the bundle's
+#   f(t){return process.platform!=="darwin"?t:{cmd:disclaimerBin(),args:[t.cmd,...t.args]}}
+# to its non-darwin (identity) branch. It looks like dead weight we only incur
+# because we spoof platform, but on Linux that wrap is load-bearing: it is the
+# only chokepoint where our spawn interception sees the bundle's own spawn
+# decisions, and the unwrap substitutes OUR resolved Claude binary for whatever
+# path the asar chose (claude-code-vm/<ver>/claude, a macOS .app path). Taking
+# the identity branch hands the SDK the asar's path unchanged and regresses
+# #132. See resolveDisclaimerCommand in stubs/cowork/exec_capability_registry.js.
+
 # Fix macOS Handoff API: invalidateCurrentActivity() and setUserActivity() are
 # macOS-only Electron APIs that crash on Linux. Replace with safe no-op fallbacks.
 patch_index "Patching macOS Handoff API invalidateCurrentActivity for Linux..." \

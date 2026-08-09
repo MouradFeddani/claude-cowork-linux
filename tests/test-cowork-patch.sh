@@ -65,6 +65,7 @@ const aboutOpts={titleBarStyle:"hiddenInset",autoHideMenuBar:!0,skipTaskbar:!0};
 function guard(){return Zq.protocol==="file:"&&Yw.app.isPackaged===!0}
 function buildArgs(){Xp.push("--effort",this.options.effort)}
 function handoff(){mB.app.invalidateCurrentActivity();mB.app.setUserActivity(qq,{})}
+function wrapSpawn(t){return process.platform!=="darwin"?t:{cmd:rpt(),args:[t.cmd,...t.args]}}
 const res=kk.app.isPackaged?process.resourcesPath:someFallback;
 const host=kk.app.isPackaged?jn.join(process.resourcesPath,"app.asar","mcp-runtime","nodeHost.js"):jn.join(kk.app.getAppPath(),"nodeHost.js");
 EOF
@@ -151,6 +152,14 @@ else
   assert_grep "$LCHUNK" '\(mB\.app\.setUserActivity\|\|function\(\)\{\}\)\)\(qq,'          "Handoff setUserActivity no-op fallback"
   refute_grep "$LCHUNK" 'kk\.app\.isPackaged\?process\.resourcesPath:' "resourcesPath fallback forced"
   assert_grep "$LCHUNK" 'kk\.app\.isPackaged\?jn\.join\(kk\.app\.getAppPath\(\),"mcp-runtime"' "MCP node-host uses getAppPath()"
+  # The disclaimer wrap site must survive patching untouched. Neutralising it to
+  # the asar's non-darwin (identity) branch is a tempting simplification -- it
+  # removes the wrap/unwrap round-trip -- but that wrap is the only chokepoint
+  # where our spawn interception sees the bundle's spawn decisions, and the
+  # unwrap substitutes our resolved Claude binary for whatever path the asar
+  # chose. Patching it away regresses #132, silently and only at session spawn.
+  assert_grep "$LCHUNK" 'function wrapSpawn\(t\)\{return process\.platform!=="darwin"\?t:\{cmd:rpt\(\)' \
+              "disclaimer wrap site left intact (removing it would regress #132)"
   assert_parses "$LCHUNK" "chunk parses after launch.sh patches"
 fi
 
@@ -176,6 +185,8 @@ else
   refute_grep "$PKCHUNK" 'titleBarStyle:"hidden"'          "PKGBUILD: main-window titlebar removed (chunk)"
   refute_grep "$PKCHUNK" 'titleBarStyle:"hiddenInset"'     "PKGBUILD: about-window titlebar removed (chunk)"
   assert_grep "$PKCHUNK" 'return Zq\.protocol==="file:"\}' "PKGBUILD: origin isPackaged dropped for file:// (chunk)"
+  assert_grep "$PKCHUNK" 'function wrapSpawn\(t\)\{return process\.platform!=="darwin"\?t:\{cmd:rpt\(\)' \
+              "PKGBUILD: disclaimer wrap site left intact (chunk)"
   assert_parses "$PKCHUNK" "PKGBUILD: chunk parses after patch_index seds"
 fi
 # Source-level guards: the recipe must discover chunks and run enable-cowork.py
