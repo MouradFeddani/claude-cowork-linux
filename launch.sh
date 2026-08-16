@@ -157,7 +157,18 @@ else
 fi
 if [ "$_needs_repack" = true ]; then
   echo "Repacking app.asar..."
-  asar pack linux-app-extracted "$ASAR_FILE"
+  # Stop on failure. launch.sh has no `set -e`, so an asar pack that died
+  # (asar not installed, disk full, a partially-written target) used to fall
+  # straight through to launching electron against whatever was there before —
+  # a stale asar, or none at all. The stale case is the dangerous one: the app
+  # comes up looking fine, running the previous build, with the failure already
+  # scrolled off.
+  if ! asar pack linux-app-extracted "$ASAR_FILE"; then
+    echo "ERROR: asar pack failed." >&2
+    echo "       Refusing to launch against a stale or missing $ASAR_FILE." >&2
+    echo "       Is the 'asar' command installed, and is there free disk space?" >&2
+    exit 1
+  fi
 else
   echo "Using cached app.asar (no changes)"
 fi
