@@ -25,8 +25,11 @@ set -euo pipefail
 # ============================================================
 
 VERSION="5.1.0"
-REPO_URL="https://github.com/johnzfitch/claude-cowork-linux.git"
-INSTALL_DIR="$HOME/.local/share/claude-desktop"
+# Overridable so a fork/branch (or a local checkout) can be installed and tested
+# without editing this script. CLAUDE_REPO_REF is passed to `git clone --branch`.
+REPO_URL="${CLAUDE_REPO_URL:-https://github.com/johnzfitch/claude-cowork-linux.git}"
+REPO_REF="${CLAUDE_REPO_REF:-}"
+INSTALL_DIR="${CLAUDE_INSTALL_DIR:-$HOME/.local/share/claude-desktop}"
 INSTALL_FORCE=0
 
 # Minimum expected archive size (100MB) — applies to both DMG and ZIP
@@ -339,7 +342,13 @@ setup_repo() {
         fi
         log_info "Cloning claude-cowork-linux to $INSTALL_DIR..."
         mkdir -p "$(dirname "$INSTALL_DIR")"
-        git clone "$REPO_URL" "$INSTALL_DIR" || die "Failed to clone repository"
+        if [[ -n "$REPO_REF" ]]; then
+            log_info "Using ref: $REPO_REF ($REPO_URL)"
+            git clone --branch "$REPO_REF" "$REPO_URL" "$INSTALL_DIR" \
+                || die "Failed to clone repository at ref $REPO_REF"
+        else
+            git clone "$REPO_URL" "$INSTALL_DIR" || die "Failed to clone repository"
+        fi
         log_success "Repository cloned"
     fi
 }
@@ -804,16 +813,21 @@ apply_patches() {
     fi
 
     # Newer Claude Desktop builds emit index.js as a thin entry shim that
-    # require()s the real main code from an index.chunk-<hash>.js file, so the
+    # require()s the real main code from an index.chunk-<hash>.js file (1.26832.0
+    # emits a second index2.chunk-<hash>.js series alongside it, and that is where
+    # the Cowork platform gate now lives), so the
     # platform-gate / IPC / host-platform patterns live in the chunk, not in
     # index.js. Patch index.js plus every chunk it require()s; enable-cowork.py
     # is idempotent (marker-guarded) and reports "not found" harmlessly for
     # files that don't contain a given pattern.
+    # Take every index*.chunk-*.js in the build dir, not just the ones index.js
+    # names: chunks require() each other transitively, so the shim's direct
+    # requires are an incomplete list.
     local -a targets=("$index_js")
     local chunk
     while IFS= read -r chunk; do
-        [[ -n "$chunk" && -f "$build_dir/$chunk" ]] && targets+=("$build_dir/$chunk")
-    done < <(grep -oE 'index\.chunk-[A-Za-z0-9_-]+\.js' "$index_js" | sort -u)
+        [[ -n "$chunk" ]] && targets+=("$chunk")
+    done < <(find "$build_dir" -maxdepth 1 -name 'index*.chunk-*.js' -type f | sort)
 
     # enable-cowork.py exits 0 when it finds (or has already patched) the
     # platform gate in a file, and 1 otherwise. On split-entry builds the gate
@@ -832,7 +846,7 @@ apply_patches() {
     if [[ -n "$any_patched" ]]; then
         log_success "Patches applied"
     else
-        log_warn "Cowork patch matched no target: the platform gate was not found in index.js or any index.chunk-*.js."
+        log_warn "Cowork patch matched no target: the platform gate was not found in index.js or any index*.chunk-*.js."
         log_warn "The Claude Desktop bundle layout may have changed; Cowork may not be enabled. See the enable-cowork.py output above."
     fi
 }
@@ -886,8 +900,20 @@ case "\${1:-}" in
         # Protocol handler callback (e.g. OAuth redirect from browser).
         # Skip the full launch.sh setup — just forward the URL to the already-running
         # instance via Electron's single-instance mechanism.
-        FORWARDER="\$COWORK_DIR/protocol-forwarder.js"
-        if [ ! -f "\$FORWARDER" ]; then
+        # install_stubs() copies this next to the extracted app, not to the
+        # install-dir root, so looking only at the root meant the fast path was
+        # never taken: every OAuth callback fell through to a full launch.sh
+        # run, which re-patches and repacks app.asar and starts a second
+        # Electron — the app appears to close and reopen mid-login. Check the
+        # locations it can actually land in.
+        FORWARDER=""
+        for _cand in \\
+            "\$COWORK_DIR/protocol-forwarder.js" \\
+            "\$COWORK_DIR/linux-app-extracted/protocol-forwarder.js" \\
+            "\$COWORK_DIR/stubs/frame-fix/protocol-forwarder.js"; do
+            if [ -f "\$_cand" ]; then FORWARDER="\$_cand"; break; fi
+        done
+        if [ -z "\$FORWARDER" ]; then
             nohup bash -c 'cd "\$1" && shift && exec ./launch.sh "\$@"' \\
                 -- "\$COWORK_DIR" "\$@" >> "\$LOG_DIR/startup.log" 2>&1 &
             disown
@@ -1352,8 +1378,12 @@ doctor() {
     if [[ -d "$app_dir/.vite/build" ]]; then
         log_success "Extracted app: $app_dir"
         ok=$((ok + 1))
-        # Check cowork patch
-        if grep -q 'cowork-patched' "$app_dir/.vite/build/index.js" 2>/dev/null; then
+        # Check cowork patch. On split-entry builds the platform gate — and so
+        # the marker — lives in a chunk, not in the index.js shim, so grepping
+        # index.js alone always reported "not applied" on a correctly patched
+        # install and sent users into a pointless reinstall.
+        if grep -rqs --include='index.js' --include='index*.chunk-*.js' \
+            'cowork-patched' "$app_dir/.vite/build" 2>/dev/null; then
             log_success "Cowork patch: applied"
             ok=$((ok + 1))
         else

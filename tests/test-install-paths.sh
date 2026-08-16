@@ -406,7 +406,7 @@ stage_6() {
                 { test -x \$HOME/.local/bin/claude-cowork && test ! -L \$HOME/.local/bin/claude-cowork; } && echo "COWORK_WRAPPER_OK" || echo "COWORK_WRAPPER_MISSING"
                 test -f \$HOME/.local/share/applications/claude.desktop && echo "DESKTOP_ENTRY_OK" || echo "DESKTOP_ENTRY_MISSING"
                 test -f \$HOME/.local/share/claude-desktop/linux-app-extracted/node_modules/@ant/claude-swift/js/index.js && echo "STUB_OK" || echo "STUB_MISSING"
-                grep -q cowork-patched \$HOME/.local/share/claude-desktop/linux-app-extracted/.vite/build/index.js 2>/dev/null && echo "PATCH_OK" || echo "PATCH_MISSING"
+                grep -rqs --include='index.js' --include='index*.chunk-*.js' cowork-patched \$HOME/.local/share/claude-desktop/linux-app-extracted/.vite/build 2>/dev/null && echo "PATCH_OK" || echo "PATCH_MISSING"
             "
         ' 2>&1) || {
         fail "Docker run failed"
