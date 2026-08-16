@@ -113,12 +113,17 @@ patch_index() {
   return 0
 }
 
-# Syntax-check every patched chunk before repacking. We now rewrite ~300 files
-# instead of 2, and patch_host_platform in particular is markerless and subs
-# globally, so a malformed rewrite would otherwise surface as a blank window at
-# launch with no clue which pass produced it. node --check is cheap next to the
-# repack and names the offending file. Warn rather than abort: a syntax error in
-# a chunk we never patched shouldn't block a launch that would otherwise work.
+# Syntax-check every patched chunk before repacking. We rewrite ~300 files
+# instead of 2, and the last pass in particular is markerless and substitutes
+# globally on a bare `process.resourcesPath,"app.asar"` token, so a malformed
+# rewrite would otherwise surface as a blank window at launch with no clue which
+# pass produced it. node --check is cheap next to the repack and names the
+# offending file. Warn rather than abort: a syntax error in a chunk we never
+# patched shouldn't block a launch that would otherwise work.
+#
+# This covers the passes above only. A caller that mutates the same files
+# afterwards (PKGBUILD runs enable-cowork.py after this) should call this again
+# once it is done.
 #
 # PATCH_INDEX_STRICT_SYNTAX=1 turns the warning into a failure. A build step
 # should stop rather than ship a package that opens a blank window; a launcher
@@ -243,10 +248,20 @@ patch_index_apply_all() {
   #
   # Separate from patch_index because it targets a preload bundle, not the
   # main-process chunks in INDEX_TARGETS.
+  # Guard on the SUBSTITUTION target, not just on the marker. sed -i rewrites the
+  # file whether or not the pattern matched, so a miss still bumps mtime -- and
+  # since a miss also leaves the marker absent, the old shape re-ran on every
+  # launch, bumped mtime every launch, and made launch.sh's "is anything newer
+  # than the cached asar" check true forever. That repacked the whole ~300-file
+  # asar on every start while printing "Patching..." as though it had worked.
   local mainview_js="$build_dir/mainView.js"
   if [ -f "$mainview_js" ] && ! grep -qE 'e\.protocol===["`]file:["`]' "$mainview_js"; then
-    echo "Patching preload origin validation for file:// protocol..."
-    sed -i -E 's/e\.hostname===["`]localhost["`]/&||e.protocol==="file:"/g' "$mainview_js"
+    if grep -qE 'e\.hostname===["`]localhost["`]' "$mainview_js"; then
+      sed -i -E 's/e\.hostname===["`]localhost["`]/&||e.protocol==="file:"/g' "$mainview_js"
+      echo "Patching preload origin validation for file:// protocol..."
+    elif [ "$PATCH_INDEX_WARN_ON_MISS" != "0" ]; then
+      echo "WARN: patch skipped (target not found): preload origin validation for file:// protocol" >&2
+    fi
   fi
 
   patch_index_verify_syntax || return 1

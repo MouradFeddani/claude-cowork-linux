@@ -246,6 +246,37 @@ else
     fail "re-running the passes on a patched tree changed it again"
   fi
 
+  # mainView.js: on a miss the pass must leave the file completely alone. sed -i
+  # rewrites regardless of whether the pattern matched, and a miss also leaves
+  # the marker absent — so the old shape re-ran every launch, bumped mtime every
+  # launch, and made launch.sh's "anything newer than the cached asar?" check
+  # true forever, repacking the whole asar on every start. Pin mtime, not just
+  # content: content was already unchanged, which is why this went unnoticed.
+  MVBUILD="$TMP/mainview_build"
+  mkdir -p "$MVBUILD"
+  echo '"use strict";' > "$MVBUILD/index.js"
+  # identifier is `q`, not `e`, so the substitution cannot match
+  printf 'function h(q){return q.hostname===`localhost`}\n' > "$MVBUILD/mainView.js"
+  touch -d '2020-01-01 00:00:00' "$MVBUILD/mainView.js"
+  MV_BEFORE="$(stat -c %Y "$MVBUILD/mainView.js")"
+  ( source "$SHARED"; patch_index_apply_all "$MVBUILD" ) >/dev/null 2>&1
+  if [[ "$MV_BEFORE" == "$(stat -c %Y "$MVBUILD/mainView.js")" ]]; then
+    pass "mainView.js untouched when the substitution target is absent"
+  else
+    fail "mainView.js rewritten on a miss (bumps mtime, forces a repack every launch)"
+  fi
+  # And it must still patch when the target IS present, and be idempotent after.
+  printf 'function h(e){return e.hostname===`localhost`}\n' > "$MVBUILD/mainView.js"
+  ( source "$SHARED"; patch_index_apply_all "$MVBUILD" ) >/dev/null 2>&1
+  assert_grep "$MVBUILD/mainView.js" 'e\.protocol==="file:"' "mainView.js patched when the target is present"
+  MV_PATCHED="$(stat -c %Y "$MVBUILD/mainView.js")"
+  ( source "$SHARED"; patch_index_apply_all "$MVBUILD" ) >/dev/null 2>&1
+  if [[ "$MV_PATCHED" == "$(stat -c %Y "$MVBUILD/mainView.js")" ]]; then
+    pass "mainView.js untouched on a second run (marker holds)"
+  else
+    fail "mainView.js rewritten on a second run"
+  fi
+
   # PKGBUILD builds with PATCH_INDEX_STRICT_SYNTAX=1 so a chunk that no longer
   # parses fails the build instead of shipping a blank-window package; launch.sh
   # leaves it unset so a bad chunk only warns rather than blocking a launch.

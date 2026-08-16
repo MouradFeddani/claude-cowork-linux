@@ -262,6 +262,18 @@ JSEOF
     fi
     echo "Cowork patches applied"
 
+    # Re-check syntax before packing. patch_index_apply_all already ran this,
+    # but three things rewrite these files AFTER it: the inline getHostPlatform
+    # sed above, and enable-cowork.py's own passes (several of which are
+    # markerless and substitute globally). Without this second call the
+    # "never ship a blank window" guarantee stops at the sed passes and misses
+    # the patcher entirely.
+    if ! PATCH_INDEX_STRICT_SYNTAX=1 patch_index_verify_syntax; then
+        echo "ERROR: a main-process chunk failed node --check after enable-cowork.py." >&2
+        echo "       Packaging it would ship an app that opens a blank window." >&2
+        return 1
+    fi
+
     # Repack into app.asar
     echo "Repacking app.asar..."
     asar pack "${srcdir}/linux-app-extracted" "${srcdir}/app.asar"
