@@ -21,6 +21,7 @@ machine-readable lines below; the table further down is for humans.
 | 1.24012.9 | [PARTIAL]  | 2026-08-01 | Local MCP servers failed to connect ("Server disconnected" before any JSON-RPC): the bundle routes MCP spawns through the macOS disclaimer wrapper, which our unwrap rejected for user-installed binaries, and `realpath` walked npm-global shims out of the allowlist entirely (#164). Fixed by removing the unwrap's per-callsite carve-out so admission runs through the one shared rule, and by admitting user binaries the user declared as MCP servers instead of any file sitting in a user-writable directory. Contributor-reported; fix not exercised by a maintainer on this build. The 1.24012.1 `DeviceRegistry` blocker below is unrelated and still applies. |
 | 1.24012.1 | [PARTIAL]  | 2026-07-24 | Cowork sessions fail to link: the asar's own `DeviceRegistry.signCreateSessionBind` throws "device not registered (no row-PK for this account)", producing the "Couldn't link this session to a computer" banner. Not stubbable -- signing that binding here would forge a device-identity check (see #161). `BuddyBleTransport.reportState`, reported alongside it, is stubbed as a no-op. |
 | 1.26832.0 | [OK]       | 2026-08-07 | Patching restored after three regressions that together made every patch silently no-op (installer reported "Cowork patch matched no target"). (a) A second chunk series, `index2.chunk-<hash>.js`, now carries the Cowork platform gate — `ke()` here. (b) The minifier switched to backtick template literals (`` `darwin` ``, `` `hidden` ``), so every double-quote-anchored pattern missed; the gate also uses `let` and a bare `throw Error(`, and minified values gained dots/negations (`r.default`, `!1`). (c) Chunks require() each other transitively, so following only the shim's requires missed 202 of 333 chunks — the `--effort` builder in `index2.chunk-Cqfh0Vpp.js` among them. With those fixed: app launches, all 8 launch.sh patches apply, `[Cowork] Linux support enabled`, 21 CoworkSpaces handlers registered, and all four `cowork-startup` rails report ok. Verified on Manjaro + Cinnamon/X11, Electron 43.1.1, Node 26, built both via `install.sh` and via `makepkg` from the PKGBUILD. Sign-in through the `claude://` callback works and live Cowork sessions are reported working in day-to-day use by the contributor, on the account that hit this. Note the UI moved upstream between 1.1.x and here: Cowork is no longer a top-level tab but a `Chat`/`Cowork` mode toggle on the composer — its presence is a useful signal that the platform gate is patched, since stock upstream shows Chat only. The 1.24012.1 device-binding failure below was **not** reproduced on this build, but nobody deliberately re-tested that path, so treat #161 as unconfirmed here rather than fixed. |
+| 1.28929.0 | [PARTIAL]  | 2026-08-14 | Contributor-reported in #171 against an **independent** fix for the same three 1.26832.0 breakages, not against the code in this tree. The patching landed here is a superset of what that report needed — quote-agnostic gate matching, the `index2.chunk-*` series, and auxiliary passes that no longer key off the gate's own chunk — so it is expected to apply, but nobody has run this tree against this build. Reported working on Fedora 44 + GNOME Wayland, Electron 43.2.0: update/extract/repack, Cowork session start, and tool permission prompts. **One known gap:** internal MCP Apps (Visualize) need host `Read` to reach SDK-spooled results under `.claude/projects/*/tool-results/*`, which Linux's safe-path resolver rejects before the allowed-root check runs. That fix was not carried over — it rewrites security-sensitive path resolution and is tracked separately in #172. |
 
 Status legend:
 
@@ -44,6 +45,7 @@ what was exercised.
 | 1.6259.1  | `https://downloads.claude.ai/releases/darwin/universal/1.6259.1/Claude-5095e7dddcba4ca974d351ee397e17d204814f07.dmg` | `98c9de8dde01f083b73e7ef08cfaf7adfd2c1386e88d2995b4202dea1a31e898` |
 | 1.19367.0 | `https://downloads.claude.ai/releases/darwin/universal/1.19367.0/Claude-1a5be1fbf83d1832486e03a667557c18f0a0ec7a.dmg` | `<pending>` |
 | 1.26832.0 | `https://downloads.claude.ai/releases/darwin/universal/1.26832.0/Claude-056ee2be623b207f6a4d24dfb1b2fb5a82db0ecf.zip` | `6b0f2c51c5e1c3f6db3885233ad96e48f92e61438b0bd9892c69f2ea11c54950` |
+| 1.28929.0 | `https://downloads.claude.ai/releases/darwin/universal/1.28929.0/Claude-d1a6bcd4ef8627d603a8290548a984220b6701cf.zip` | `d56ea682de438242b9fd142b0e4f8b55ba65c01a4ab22def02e881ef924bde8a` |
 
 The URL for each release embeds a per-release hash, so it cannot be
 constructed from the version number -- a build has a pinnable URL only if
@@ -61,6 +63,14 @@ filling in the `<pending>` cell.
 The 1.26832.0 row was contributed in #167 and re-checked live there (HTTP
 200, `application/zip`, 350467183 bytes); the SHA-256 is of the archive
 that build was actually verified against.
+
+The 1.28929.0 row was contributed in #171. Neither its URL nor its
+checksum has been re-fetched here, so treat it as a contributor pointer
+until someone verifies the bytes. `LAST_TESTED_ASAR_VERSION` deliberately
+stays at 1.26832.0: that is the newest build exercised end-to-end against
+*this* tree, and the machine-readable line drives the installer's
+"newer than tested" warning, so moving it to a version nobody has run
+here would suppress a warning that is still earned.
 
 To pin and verify a tested version:
 

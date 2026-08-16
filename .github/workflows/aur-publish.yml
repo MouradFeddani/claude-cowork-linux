@@ -15,7 +15,46 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      # Every run since 2026-04-23 failed inside the deploy action with
+      #   Load key "/home/builder/.ssh/aur": invalid format
+      # which surfaces only in the container log, so the package silently
+      # stopped updating. Check the secret here instead, where the failure
+      # names itself.
+      - name: Check the AUR signing key is present and well-formed
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          if [ -z "$AUR_SSH_KEY" ]; then
+            echo "::error::AUR_SSH_KEY is unset or empty. Add the repo secret before publishing."
+            exit 1
+          fi
+
+          printf '%s\n' "$AUR_SSH_KEY" > /tmp/aur_key
+          chmod 600 /tmp/aur_key
+
+          # ssh-keygen -y reads the key the same way the deploy action does, so
+          # a key that passes here will not fail with "invalid format" there.
+          # -P '' plus </dev/null keeps an encrypted key from prompting and
+          # hanging the job instead of failing it.
+          if ! ssh-keygen -y -P '' -f /tmp/aur_key > /dev/null 2>&1 < /dev/null; then
+            echo "::error::AUR_SSH_KEY is not a usable unencrypted OpenSSH private key."
+            echo "Common causes: the secret holds a public key, it is passphrase-protected,"
+            echo "the PEM line breaks were lost on paste, or the trailing newline is missing."
+            echo "Regenerate with: ssh-keygen -t ed25519 -N '' -f aur_key  (paste all of aur_key)"
+            rm -f /tmp/aur_key
+            exit 1
+          fi
+          rm -f /tmp/aur_key
+          echo "AUR_SSH_KEY parses as a valid private key."
+
+      # test-cowork-patch.sh extracts and exercises PKGBUILD's own patch_index
+      # block. Publishing a recipe that fails it ships a broken AUR package.
+      - name: Verify the packaging recipe before publishing
+        run: |
+          bash tests/test-compat-pins.sh
+          bash tests/test-cowork-patch.sh
 
       - name: Publish to AUR
         uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
