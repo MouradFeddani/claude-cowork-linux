@@ -37,17 +37,22 @@
 #       Logs once if any file matched; warns once if none did. Always returns 0.
 #
 #   patch_index_verify_syntax
-#       node --check every file in INDEX_TARGETS, warning (not failing) on a
-#       parse error. Always returns 0.
+#       node --check every file in INDEX_TARGETS. Warns and returns 0 by
+#       default; returns 1 on a parse error when PATCH_INDEX_STRICT_SYNTAX=1.
 #
 #   patch_index_apply_all <build_dir>
 #       collect targets -> every pass, in order -> mainView.js -> verify syntax.
-#       Always returns 0.
+#       Returns 0, except that it propagates a strict-mode syntax failure.
 #
-# Every function returns 0 unconditionally. PKGBUILD's build() runs under
-# makepkg's `set -e`, so a function whose last command is a failing test (the
-# `[ -n "$matched" ] && echo` shape launch.sh used) would abort the package
-# build the first time a pass legitimately found nothing.
+# RETURN CONTRACT
+# ---------------
+# The syntax check is the ONLY thing that can make any of these return non-zero,
+# and only when the caller opts in with PATCH_INDEX_STRICT_SYNTAX=1. Everything
+# else returns 0 unconditionally -- in particular a pass that matches nothing is
+# not an error. PKGBUILD's build() runs under makepkg's `set -e`, so a function
+# whose last command is a failing test (the `[ -n "$matched" ] && echo` shape
+# launch.sh used) would abort the package build the first time a pass
+# legitimately found nothing.
 #
 # ADDING A PASS
 # -------------

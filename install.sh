@@ -752,12 +752,16 @@ install_stubs() {
     # from the install dir (via claude-desktop launcher) use current code
     if [[ "$stub_src" != "$INSTALL_DIR" && -d "$INSTALL_DIR" ]]; then
         log_info "Syncing stubs and launch scripts to install dir..."
-        cp -rf "$stub_src/stubs" "$INSTALL_DIR/"
-        cp -f "$stub_src/launch.sh" "$INSTALL_DIR/launch.sh"
-        cp -f "$stub_src/launch-devtools.sh" "$INSTALL_DIR/launch-devtools.sh"
-        # launch.sh sources this for its patch passes and refuses to start
-        # without it, so it has to travel with launch.sh (#170).
-        cp -f "$stub_src/patch-index.sh" "$INSTALL_DIR/patch-index.sh"
+        # Name the missing file. Under `set -e` a bare cp failure aborts the
+        # install anyway, but with "cp: cannot stat ..." and no hint that the
+        # checkout is incomplete. patch-index.sh matters most: launch.sh sources
+        # it for its patch passes and refuses to start without it (#170), so a
+        # silent miss here would surface as a launcher that aborts every time.
+        local _f
+        for _f in launch.sh launch-devtools.sh patch-index.sh; do
+            [[ -f "$stub_src/$_f" ]] || die "$_f missing from $stub_src. Re-run from a complete checkout."
+            cp -f "$stub_src/$_f" "$INSTALL_DIR/$_f"
+        done
     fi
 
     log_success "Stubs installed"
@@ -815,9 +819,16 @@ apply_patches() {
         patch_script="$INSTALL_DIR/enable-cowork.py"
     fi
 
-    if [[ -z "$patch_script" || ! -f "$index_js" ]]; then
-        log_warn "Patch script or index.js not found, skipping patches"
+    # A missing index.js means there is nothing to patch yet, which is a
+    # legitimate state; a missing script of OURS means a broken checkout, and
+    # continuing would hand the user an install where Cowork was silently never
+    # enabled. Those deserve different answers, so don't fold them together.
+    if [[ ! -f "$index_js" ]]; then
+        log_warn "index.js not found at $index_js, skipping patches"
         return
+    fi
+    if [[ -z "$patch_script" ]]; then
+        die "enable-cowork.py not found in $script_dir or $INSTALL_DIR. Cowork cannot be enabled; re-run from a complete checkout."
     fi
 
     # Newer Claude Desktop builds emit index.js as a thin entry shim that
@@ -839,8 +850,7 @@ apply_patches() {
         discovery="$INSTALL_DIR/patch-index.sh"
     fi
     if [[ -z "$discovery" ]]; then
-        log_warn "patch-index.sh not found, skipping patches"
-        return
+        die "patch-index.sh not found in $script_dir or $INSTALL_DIR. Cowork cannot be enabled; re-run from a complete checkout."
     fi
     # shellcheck source=patch-index.sh
     source "$discovery"
