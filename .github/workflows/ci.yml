@@ -1,0 +1,87 @@
+name: CI
+
+# The repo carries ~600 tests that nothing ran automatically: PR #167 landed
+# with zero check runs against it, and the packaging drift caught in #170 and
+# in .SRCINFO reached users because nothing compared the two patch lists.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: Node tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run stub/IPC test suite
+        run: node --test tests/node/current-path/*.test.cjs
+
+  shell:
+    name: Patch + compat tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Asserts LAST_TESTED_ASAR_VERSION has a pinning row, so a compat report
+      # can't record a version nobody can obtain (#165).
+      - name: Compat pin consistency
+        run: bash tests/test-compat-pins.sh
+
+      # Extracts the patch_index blocks from launch.sh and PKGBUILD and runs
+      # them against fixtures, including the backtick/let/index2 shapes from
+      # #166 and the minified-name fallback.
+      - name: Cowork patch passes
+        run: bash tests/test-cowork-patch.sh
+
+  python:
+    name: enable-cowork.py syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Byte-compile the patcher
+        run: python -m py_compile enable-cowork.py
+
+  srcinfo:
+    name: .SRCINFO matches PKGBUILD
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v5
+
+      # makepkg refuses to run as root, and the checkout is root-owned.
+      # base-devel ships no git, so actions/checkout unpacks a tarball rather
+      # than cloning -- there is no repo here to mark as a safe directory, and
+      # --printsrcinfo only parses the PKGBUILD, it never fetches the source.
+      - name: Regenerate and diff
+        run: |
+          useradd -m builder
+          chown -R builder .
+          su builder -c 'makepkg --printsrcinfo' > .SRCINFO.generated
+          if ! diff -u .SRCINFO .SRCINFO.generated; then
+            echo "::error file=.SRCINFO::.SRCINFO is stale. Regenerate with: makepkg --printsrcinfo > .SRCINFO"
+            exit 1
+          fi

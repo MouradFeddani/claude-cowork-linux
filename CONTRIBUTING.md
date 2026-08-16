@@ -53,6 +53,31 @@ a checkout carries no instructions to a reader that a human wouldn't see in revi
 Documentation for humans belongs in `README.md`, `docs/`, or here. Keep your own agent
 config outside the repo (`~/.claude/`, or untracked and gitignored locally).
 
+## Testing a Fork End to End
+
+`install.sh` defaults to cloning this repo's `master`, so a fork's changes to
+the stubs and scripts won't be exercised by a plain `bash install.sh`. Three
+environment variables override that, which is the supported way to run your own
+branch through the real install path before opening a PR:
+
+```sh
+CLAUDE_REPO_URL="https://github.com/<you>/claude-cowork-linux.git" \
+CLAUDE_REPO_REF="my-branch" \
+bash install.sh --force
+```
+
+- `CLAUDE_REPO_URL` -- repository to clone (default: this repo)
+- `CLAUDE_REPO_REF` -- branch/tag to check out (default: the remote's default branch)
+- `CLAUDE_INSTALL_DIR` -- install location (default: `~/.local/share/claude-desktop`)
+
+`COWORK_DIR` in the generated launcher derives from the install dir, so an
+override propagates rather than half-applying.
+
+Note the `PKGBUILD` is separate: its `source=()` clones this repo by URL, so
+`makepkg` runs **master's** scripts even from a fork checkout. To exercise the
+AUR path against your branch, point `source=` at your fork first -- otherwise a
+bug you have already fixed will still reproduce in `build()`.
+
 ## What's Most Useful
 
 - Distro-specific fixes (package names, binary paths, keyring providers)
@@ -81,7 +106,7 @@ cd claude-cowork-linux
 ### Running Tests
 
 ```bash
-# All tests (215+ tests across 18 files)
+# All tests (559 tests across 35 files)
 node --test tests/node/current-path/*.test.cjs
 
 # Single module

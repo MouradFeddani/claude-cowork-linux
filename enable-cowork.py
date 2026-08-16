@@ -17,8 +17,16 @@ Example:
 import sys
 import re
 
+# Minifiers emit string literals as either double quotes or template literals;
+# 1.26832.0 switched the main bundle wholesale from "darwin" to `darwin`. Match
+# either so a quote-style flip alone can't silently disable every patch below.
+Q = r'["`]'
+
 # Known exact patterns per version (tried first for speed)
 KNOWN_PATTERNS = [
+    # v1.26832.0 — function ke(), backtick literals and `let`
+    ('function ke(){let t=process.platform;if(t!==`darwin`&&t!==`win32`)return{status:`unsupported`',
+     'ke'),
     # v1.1.3963 — function xPt()
     ('function xPt(){const t=process.platform;if(t!=="darwin"&&t!=="win32")return{status:"unsupported"',
      'xPt'),
@@ -28,13 +36,15 @@ KNOWN_PATTERNS = [
 ]
 
 # Regex fallback: matches any function whose body starts with a platform check
-# and returns {status:"unsupported"} for non-darwin platforms
+# and returns {status:"unsupported"} for non-darwin platforms. The declaration
+# keyword (const/let/var), the quote style, and minified names that contain `$`
+# all rotate between builds, so none of them are pinned here.
 PLATFORM_GATE_RE = re.compile(
-    r'function (\w+)\(\)\{'
-    r'(?:const \w+=process\.platform;)?'
+    r'function ([\w$]+)\(\)\{'
+    r'(?:(?:const|let|var) [\w$]+=process\.platform;)?'
     r'(?:return )?'
-    r'(?:if\(\w+!=="darwin"|\w+!=="darwin"\?)'
-    r'[^}]*status:"unsupported"'
+    r'(?:if\([\w$]+!==' + Q + r'darwin' + Q + r'|[\w$]+!==' + Q + r'darwin' + Q + r'\?)'
+    r'[^}]*status:' + Q + r'unsupported' + Q
 )
 
 
@@ -85,9 +95,10 @@ def patch_file(filepath):
 
     if not func_name or not func_full:
         print(f"ERROR: Platform-gate function not found in {filepath}")
-        print("  Searched for known patterns (xPt, wj) and regex fallback.")
-        print("  The minified function name may have changed — inspect index.js for")
-        print("  a function checking process.platform and returning {{status:\"unsupported\"}}.")
+        known = ", ".join(name for _, name in KNOWN_PATTERNS)
+        print(f"  Searched for known patterns ({known}) and regex fallback.")
+        print(f"  The minified function name may have changed — inspect {filepath} for")
+        print('  a function checking process.platform and returning {status:"unsupported"}.')
         return False
 
     new_code = f'function {func_name}(){{return{{status:"supported"}}}}{PATCH_MARKER}'
@@ -100,8 +111,9 @@ def patch_file(filepath):
     print(f"  {func_name}() now returns {{status:\"supported\"}} unconditionally")
     return True
 
+# `new` is optional: 1.26832.0 emits a bare `throw Error(...)` here.
 HOST_PLATFORM_THROW_RE = re.compile(
-    r'throw new Error\([^)]*Unsupported platform[^)]*\)'
+    r'throw (?:new )?Error\([^)]*Unsupported platform[^)]*\)'
 )
 
 
@@ -152,7 +164,7 @@ def patch_host_platform(filepath):
 # names like `$m` even contain `$`), so match both with [\w$]+ and reuse the
 # captured arg in the exemption rather than hardcoding it.
 IPC_ORIGIN_GUARD_RE = re.compile(
-    r'if\(!([\w$]+)\(([\w$]+)\)\)(throw new Error\(`[^`]*did not pass origin validation`\))'
+    r'if\(!([\w$]+)\(([\w$]+)\)\)(throw (?:new )?Error\(`[^`]*did not pass origin validation`\))'
 )
 IPC_PATCH_MARKER = '/*cowork-ipc-patched*/'
 
@@ -229,9 +241,19 @@ if __name__ == "__main__":
         print(__doc__)
         sys.exit(1)
 
-    success = patch_file(sys.argv[1])
-    if success:
-        patch_host_platform(sys.argv[1])
-        patch_ipc_origin_guards(sys.argv[1])
-        patch_platform_return_gates(sys.argv[1])
-    sys.exit(0 if success else 1)
+    target = sys.argv[1]
+
+    # The platform gate lives in exactly one file, but the IPC origin guards,
+    # getHostPlatform() throw, and return-style gates are spread across many
+    # chunks of a split-entry build. Gating those on the platform gate being
+    # present in the *same* file meant they were silently skipped in every
+    # chunk that didn't happen to also hold the gate. Run them unconditionally;
+    # each is independently marker-guarded and no-ops when it finds no match.
+    gate_patched = patch_file(target)
+    patch_host_platform(target)
+    patch_ipc_origin_guards(target)
+    patch_platform_return_gates(target)
+
+    # Exit code still reports only the platform gate: install.sh uses it to
+    # decide whether Cowork was actually enabled across the whole bundle.
+    sys.exit(0 if gate_patched else 1)
