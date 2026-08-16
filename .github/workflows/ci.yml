@@ -73,11 +73,13 @@ jobs:
       - uses: actions/checkout@v5
 
       # makepkg refuses to run as root, and the checkout is root-owned.
+      # base-devel ships no git, so actions/checkout unpacks a tarball rather
+      # than cloning -- there is no repo here to mark as a safe directory, and
+      # --printsrcinfo only parses the PKGBUILD, it never fetches the source.
       - name: Regenerate and diff
         run: |
           useradd -m builder
           chown -R builder .
-          git config --global --add safe.directory "$PWD"
           su builder -c 'makepkg --printsrcinfo' > .SRCINFO.generated
           if ! diff -u .SRCINFO .SRCINFO.generated; then
             echo "::error file=.SRCINFO::.SRCINFO is stale. Regenerate with: makepkg --printsrcinfo > .SRCINFO"
