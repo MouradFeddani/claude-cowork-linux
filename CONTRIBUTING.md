@@ -106,7 +106,7 @@ cd claude-cowork-linux
 ### Running Tests
 
 ```bash
-# All tests (215+ tests across 18 files)
+# All tests (559 tests across 35 files)
 node --test tests/node/current-path/*.test.cjs
 
 # Single module
