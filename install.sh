@@ -755,6 +755,9 @@ install_stubs() {
         cp -rf "$stub_src/stubs" "$INSTALL_DIR/"
         cp -f "$stub_src/launch.sh" "$INSTALL_DIR/launch.sh"
         cp -f "$stub_src/launch-devtools.sh" "$INSTALL_DIR/launch-devtools.sh"
+        # launch.sh sources this for its patch passes and refuses to start
+        # without it, so it has to travel with launch.sh (#170).
+        cp -f "$stub_src/patch-index.sh" "$INSTALL_DIR/patch-index.sh"
     fi
 
     log_success "Stubs installed"
@@ -825,14 +828,24 @@ apply_patches() {
     # index.js. Patch index.js plus every chunk it require()s; enable-cowork.py
     # is idempotent (marker-guarded) and reports "not found" harmlessly for
     # files that don't contain a given pattern.
-    # Take every index*.chunk-*.js in the build dir, not just the ones index.js
-    # names: chunks require() each other transitively, so the shim's direct
-    # requires are an incomplete list.
-    local -a targets=("$index_js")
-    local chunk
-    while IFS= read -r chunk; do
-        [[ -n "$chunk" ]] && targets+=("$chunk")
-    done < <(find "$build_dir" -maxdepth 1 -name 'index*.chunk-*.js' -type f | sort)
+    #
+    # Discovery comes from patch-index.sh rather than a private copy of the same
+    # find(1): launch.sh and PKGBUILD already share it, and a third copy is a
+    # third thing to forget when the bundle layout moves again (#170).
+    local discovery=""
+    if [[ -f "$script_dir/patch-index.sh" ]]; then
+        discovery="$script_dir/patch-index.sh"
+    elif [[ -f "$INSTALL_DIR/patch-index.sh" ]]; then
+        discovery="$INSTALL_DIR/patch-index.sh"
+    fi
+    if [[ -z "$discovery" ]]; then
+        log_warn "patch-index.sh not found, skipping patches"
+        return
+    fi
+    # shellcheck source=patch-index.sh
+    source "$discovery"
+    patch_index_collect_targets "$build_dir"
+    local -a targets=("${INDEX_TARGETS[@]+"${INDEX_TARGETS[@]}"}")
 
     # enable-cowork.py exits 0 when it finds (or has already patched) the
     # platform gate in a file, and 1 otherwise. On split-entry builds the gate
