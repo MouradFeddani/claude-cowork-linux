@@ -337,8 +337,13 @@ setup_repo() {
             || log_info "Local repo has modifications, stubs will be synced from source"
         log_success "Repository updated"
     else
-        if [[ -d "$INSTALL_DIR" ]]; then
-            log_info "Existing non-git install dir found, will overlay"
+        # git clone refuses a non-empty destination, so "overlay" was never
+        # true -- it just deferred the failure to a bare git error. Matters
+        # more now that CLAUDE_INSTALL_DIR can point anywhere.
+        if [[ -d "$INSTALL_DIR" ]] && [[ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]]; then
+            die "Install dir exists and is not a git checkout: $INSTALL_DIR
+       git clone cannot populate a non-empty directory. Move it aside, remove
+       it, or set CLAUDE_INSTALL_DIR to a path that is empty or absent."
         fi
         log_info "Cloning claude-cowork-linux to $INSTALL_DIR..."
         mkdir -p "$(dirname "$INSTALL_DIR")"

@@ -97,8 +97,8 @@ def patch_file(filepath):
         print(f"ERROR: Platform-gate function not found in {filepath}")
         known = ", ".join(name for _, name in KNOWN_PATTERNS)
         print(f"  Searched for known patterns ({known}) and regex fallback.")
-        print("  The minified function name may have changed — inspect index.js for")
-        print("  a function checking process.platform and returning {{status:\"unsupported\"}}.")
+        print(f"  The minified function name may have changed — inspect {filepath} for")
+        print('  a function checking process.platform and returning {status:"unsupported"}.')
         return False
 
     new_code = f'function {func_name}(){{return{{status:"supported"}}}}{PATCH_MARKER}'
