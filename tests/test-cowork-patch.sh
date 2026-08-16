@@ -401,6 +401,58 @@ fi
 assert_grep "$BTGATE" 'function zQ7x\(\)\{return\{status:"supported"\}\}' "backtick: unknown-named gate rewritten"
 assert_parses "$BTGATE" "backtick: unknown-named gate parses after patching"
 
+# getHostPlatform throw whose message contains a call. HOST_PLATFORM_THROW_RE
+# used [^)]*, which stops at the FIRST ')', so the match ended inside the call
+# and the substitution left its closing paren behind as `return"darwin-x64")`.
+# enable-cowork.py reported SUCCESS and exited 0 on a file it had just made
+# unparseable. Every fixture above happens to use a paren-free message, which is
+# why nothing caught it.
+PARENGATE="$TMP/host_platform_paren.js"
+cat > "$PARENGATE" <<'EOF'
+"use strict";
+function ke(){let t=process.platform;if(t!==`darwin`&&t!==`win32`)return{status:`unsupported`,reason:`nope`};return{status:`supported`}}
+function hostPlat(){if(process.platform==="darwin")return"darwin-x64";throw new Error("Unsupported platform: "+getPlatformName())}
+EOF
+python3 "$REPO_ROOT/enable-cowork.py" "$PARENGATE" >/dev/null 2>&1
+refute_grep "$PARENGATE" 'throw new Error\("Unsupported platform'  "paren: getHostPlatform throw rewritten"
+refute_grep "$PARENGATE" 'return"darwin-x64"\)'                    "paren: no dangling paren left behind"
+assert_parses "$PARENGATE" "paren: chunk still parses after patching"
+
+# Nesting deeper than the pattern handles must fail CLOSED — leave the throw
+# alone — rather than emit invalid JS.
+DEEPGATE="$TMP/host_platform_deep.js"
+cat > "$DEEPGATE" <<'EOF'
+"use strict";
+function ke(){let t=process.platform;if(t!==`darwin`&&t!==`win32`)return{status:`unsupported`,reason:`nope`};return{status:`supported`}}
+function hostPlat(){throw new Error("Unsupported platform: "+fmt(name(x)))}
+EOF
+python3 "$REPO_ROOT/enable-cowork.py" "$DEEPGATE" >/dev/null 2>&1
+assert_parses "$DEEPGATE" "deep nesting: fails closed, chunk still parses"
+
+# The corruption guard must actually fire, on stderr, without changing the
+# exit code — both callers read non-zero as "no platform gate here", so failing
+# that way would hide the corruption instead of surfacing it.
+BADJS="$TMP/unparseable.js"
+cat > "$BADJS" <<'EOF'
+"use strict";
+function ke(){let t=process.platform;if(t!==`darwin`&&t!==`win32`)return{status:`unsupported`,reason:`nope`};return{status:`supported`}}
+function oops(){ return 1)  }
+EOF
+BADERR="$(python3 "$REPO_ROOT/enable-cowork.py" "$BADJS" 2>&1 >/dev/null)"
+BADRC=$?
+if [[ "$HAVE_NODE" -eq 0 ]]; then
+  skip "corruption guard warns on stderr (node not installed)"
+elif [[ "$BADERR" == *"not valid JavaScript after patching"* ]]; then
+  pass "corruption guard warns on stderr"
+else
+  fail "corruption guard silent on an unparseable file"
+fi
+if [[ "$BADRC" -eq 0 ]]; then
+  pass "corruption guard leaves the exit-code contract alone"
+else
+  fail "corruption guard changed the exit code (callers read non-zero as 'no gate here')"
+fi
+
 # The shared patch passes against the same shapes.
 if [[ -f "$SHARED" ]]; then
   BTBUILD="$TMP/backtick_build"
