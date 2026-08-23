@@ -19,9 +19,27 @@
 # launch.sh and PKGBUILD used to carry two hand-maintained copies of the pass
 # list. They drifted: launch.sh grew to 9 passes while PKGBUILD's build() stayed
 # at 3. Because /usr/bin/claude-cowork execs electron directly against the
-# packaged asar and never calls launch.sh, AUR users silently lost the other
-# six -- most visibly the MCP node-host path fix, which surfaces as
-# "MCP Filesystem: Node host not found" and no local MCP servers.
+# packaged asar and never calls launch.sh, AUR users silently lost the other six.
+#
+# Two of those six actually regressed the AUR build:
+#   - the unguarded `process.resourcesPath,"app.asar"` join, which left
+#     shellPathWorker.js resolving to a nonexistent file and broke login-shell
+#     PATH priming;
+#   - the mainView.js preload-origin patch, which left CoworkSpaces unexposed to
+#     the renderer (empty Projects page, spaces not persisting).
+#
+# The other four did not, and it is worth saying so here so nobody re-adds them
+# expecting a fix. The resourcesPath and MCP node-host passes are both gated on
+# app.isPackaged, and both launchers start electron with a *path argument*, so
+# process.defaultApp is true, isPackaged is false, and those seds rewrite a
+# branch that is never taken (see the same note at the resourcesPath pass
+# below). The Handoff pair and the --effort remap are independently covered by
+# frame-fix-wrapper.js and session_orchestrator.js, which PKGBUILD does install.
+#
+# In particular this is NOT the cause of "MCP Filesystem: Node host not found".
+# #170 said it was; that was reasoning from "the pass is missing" to "the symptom
+# must occur" without checking the branch was reachable, and the issue title
+# still carries it.
 #
 # The drift was invisible because both builds "worked". Keeping one list makes
 # it unrepresentable rather than merely tested for.
