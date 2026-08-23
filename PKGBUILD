@@ -18,6 +18,12 @@ makedepends=(
     'p7zip'
     'asar'
     'curl'
+    # build() runs `python "${_repo}/enable-cowork.py"` unconditionally, so this
+    # is a hard build dependency. It was listed only in optdepends, which meant
+    # a clean-chroot build (the way AUR packages are supposed to be built) had
+    # no python and failed inside the patch loop -- and the recipe reported it
+    # as "the bundle layout may have changed" rather than a missing dependency.
+    'python'
 )
 optdepends=(
     'xdg-utils: for opening URLs'

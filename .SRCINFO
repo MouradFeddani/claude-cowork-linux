@@ -8,6 +8,7 @@ pkgbase = claude-cowork-linux
 	makedepends = p7zip
 	makedepends = asar
 	makedepends = curl
+	makedepends = python
 	depends = electron
 	depends = nodejs
 	depends = curl
