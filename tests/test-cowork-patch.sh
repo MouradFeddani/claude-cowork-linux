@@ -348,6 +348,17 @@ else
   fail "install.sh does not copy patch-index.sh (installed launcher would abort)"
 fi
 
+# ...and the stubs/ tree, which is easy to lose when this block is refactored.
+# launch.sh re-syncs from $INSTALL_DIR/stubs into the extracted app on every
+# start and the launcher's protocol-forwarder search looks under it, so dropping
+# it means an update installs fresh stubs and then has the stale ones copied
+# back over them on the next launch. That is invisible at install time.
+if grep -qE 'cp -rf? "\$stub_src/stubs" "\$INSTALL_DIR/"' "$REPO_ROOT/install.sh"; then
+  pass "install.sh syncs the stubs/ tree into the install dir"
+else
+  fail "install.sh does not sync stubs/ (updates would run against stale stubs)"
+fi
+
 # Source-level guards: chunk discovery now lives in the shared script, and the
 # recipe must still run enable-cowork.py across every discovered target.
 if grep -qF "name 'index*.chunk-*.js'" "$REPO_ROOT/patch-index.sh"; then

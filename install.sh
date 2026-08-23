@@ -757,6 +757,13 @@ install_stubs() {
         # checkout is incomplete. patch-index.sh matters most: launch.sh sources
         # it for its patch passes and refuses to start without it (#170), so a
         # silent miss here would surface as a launcher that aborts every time.
+        # The stubs/ tree has to come along too. launch.sh re-syncs from
+        # $INSTALL_DIR/stubs into the extracted app on every start, and the
+        # launcher's protocol-forwarder search looks under it, so leaving it
+        # behind means an update installs fresh stubs and then has the old ones
+        # copied back over them on the next launch.
+        [[ -d "$stub_src/stubs" ]] || die "stubs/ missing from $stub_src. Re-run from a complete checkout."
+        cp -rf "$stub_src/stubs" "$INSTALL_DIR/"
         local _f
         for _f in launch.sh launch-devtools.sh patch-index.sh; do
             [[ -f "$stub_src/$_f" ]] || die "$_f missing from $stub_src. Re-run from a complete checkout."
