@@ -50,7 +50,28 @@ fi
 # stub and running this script debugged the PREVIOUS build. For a debugging
 # tool that is the worst possible failure — it looks like your change had no
 # effect.
+#
+# Only repack a tree launch.sh has ALREADY prepared. launch.sh does more than
+# patch: it rewrites package.json's entry point to frame-fix-entry.js, mirrors
+# the i18n JSONs, swaps in the Linux pty.node, and installs the plugin shim.
+# Repacking without those produces an asar that loads .vite/build/index.pre.js
+# directly, so the frame-fix wrapper never runs and the app comes up broken.
+# Copying that list here is precisely how launch.sh and PKGBUILD drifted apart
+# (#170), so require the prepared state and point at launch.sh instead.
+if [ ! -f "$ASAR_FILE" ]; then
+  echo "ERROR: $ASAR_FILE not found. Run ./launch.sh once to build it." >&2
+  exit 1
+fi
+
 if [ -d "linux-app-extracted" ]; then
+  if ! grep -q '"main":[[:space:]]*"frame-fix-entry.js"' "linux-app-extracted/package.json" 2>/dev/null; then
+    echo "ERROR: linux-app-extracted has not been prepared by launch.sh." >&2
+    echo "       Its package.json entry point is still the stock one, so a repack" >&2
+    echo "       here would produce an asar that never loads frame-fix-wrapper." >&2
+    echo "       Run ./launch.sh once first." >&2
+    exit 1
+  fi
+
   if [ -f "$SCRIPT_DIR/patch-index.sh" ]; then
     # shellcheck source=patch-index.sh
     source "$SCRIPT_DIR/patch-index.sh"
@@ -71,11 +92,6 @@ if [ -d "linux-app-extracted" ]; then
   else
     echo "WARNING: asar not installed; launching against the existing $ASAR_FILE" >&2
   fi
-fi
-
-if [ ! -f "$ASAR_FILE" ]; then
-  echo "ERROR: $ASAR_FILE not found. Run ./launch.sh once to build it." >&2
-  exit 1
 fi
 
 # Enable logging and DevTools

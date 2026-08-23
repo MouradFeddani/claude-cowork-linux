@@ -399,6 +399,20 @@ if [[ -f "$SHARED" ]]; then
   fi
 fi
 
+# launch-devtools.sh repacks now, so it must refuse a tree launch.sh has not
+# prepared -- repacking a stock package.json yields an asar that loads
+# index.pre.js directly and never runs frame-fix-wrapper. The guard has to come
+# BEFORE the repack, or it can never fire (the repack creates the file the
+# earlier existence check looks for).
+_dv="$REPO_ROOT/launch-devtools.sh"
+_guard_line="$(grep -n 'not been prepared by launch.sh' "$_dv" | head -1 | cut -d: -f1)"
+_repack_line="$(grep -n 'asar pack linux-app-extracted' "$_dv" | head -1 | cut -d: -f1)"
+if [[ -n "$_guard_line" && -n "$_repack_line" && "$_guard_line" -lt "$_repack_line" ]]; then
+  pass "launch-devtools.sh checks for a launch.sh-prepared tree before repacking"
+else
+  fail "launch-devtools.sh repacks without (or before) the prepared-tree check"
+fi
+
 # Source-level guards: chunk discovery now lives in the shared script, and the
 # recipe must still run enable-cowork.py across every discovered target.
 if grep -qF "name 'index*.chunk-*.js'" "$REPO_ROOT/patch-index.sh"; then
