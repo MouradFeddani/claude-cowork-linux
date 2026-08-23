@@ -752,9 +752,23 @@ install_stubs() {
     # from the install dir (via claude-desktop launcher) use current code
     if [[ "$stub_src" != "$INSTALL_DIR" && -d "$INSTALL_DIR" ]]; then
         log_info "Syncing stubs and launch scripts to install dir..."
+        # Name the missing file. Under `set -e` a bare cp failure aborts the
+        # install anyway, but with "cp: cannot stat ..." and no hint that the
+        # checkout is incomplete. patch-index.sh matters most: launch.sh sources
+        # it for its patch passes and refuses to start without it (#170), so a
+        # silent miss here would surface as a launcher that aborts every time.
+        # The stubs/ tree has to come along too. launch.sh re-syncs from
+        # $INSTALL_DIR/stubs into the extracted app on every start, and the
+        # launcher's protocol-forwarder search looks under it, so leaving it
+        # behind means an update installs fresh stubs and then has the old ones
+        # copied back over them on the next launch.
+        [[ -d "$stub_src/stubs" ]] || die "stubs/ missing from $stub_src. Re-run from a complete checkout."
         cp -rf "$stub_src/stubs" "$INSTALL_DIR/"
-        cp -f "$stub_src/launch.sh" "$INSTALL_DIR/launch.sh"
-        cp -f "$stub_src/launch-devtools.sh" "$INSTALL_DIR/launch-devtools.sh"
+        local _f
+        for _f in launch.sh launch-devtools.sh patch-index.sh; do
+            [[ -f "$stub_src/$_f" ]] || die "$_f missing from $stub_src. Re-run from a complete checkout."
+            cp -f "$stub_src/$_f" "$INSTALL_DIR/$_f"
+        done
     fi
 
     log_success "Stubs installed"
@@ -812,9 +826,21 @@ apply_patches() {
         patch_script="$INSTALL_DIR/enable-cowork.py"
     fi
 
-    if [[ -z "$patch_script" || ! -f "$index_js" ]]; then
-        log_warn "Patch script or index.js not found, skipping patches"
+    # A missing index.js means there is nothing to patch yet, which is a
+    # legitimate state; a missing script of OURS means a broken checkout, and
+    # continuing would hand the user an install where Cowork was silently never
+    # enabled. Those deserve different answers, so don't fold them together.
+    if [[ ! -f "$index_js" ]]; then
+        log_warn "index.js not found at $index_js, skipping patches"
         return
+    fi
+    if [[ -z "$patch_script" ]]; then
+        log_error "enable-cowork.py not found in $script_dir or $INSTALL_DIR."
+        log_error "Cowork will NOT be enabled. This usually means \$INSTALL_DIR is a"
+        log_error "checkout that could no longer fast-forward (a pinned CLAUDE_REPO_REF"
+        log_error "leaves it on a detached HEAD, and local edits block the pull)."
+        log_error "Fix it with: git -C \"$INSTALL_DIR\" checkout master && git -C \"$INSTALL_DIR\" pull"
+        return 0
     fi
 
     # Newer Claude Desktop builds emit index.js as a thin entry shim that
@@ -825,14 +851,38 @@ apply_patches() {
     # index.js. Patch index.js plus every chunk it require()s; enable-cowork.py
     # is idempotent (marker-guarded) and reports "not found" harmlessly for
     # files that don't contain a given pattern.
-    # Take every index*.chunk-*.js in the build dir, not just the ones index.js
-    # names: chunks require() each other transitively, so the shim's direct
-    # requires are an incomplete list.
-    local -a targets=("$index_js")
-    local chunk
-    while IFS= read -r chunk; do
-        [[ -n "$chunk" ]] && targets+=("$chunk")
-    done < <(find "$build_dir" -maxdepth 1 -name 'index*.chunk-*.js' -type f | sort)
+    #
+    # Discovery comes from patch-index.sh rather than a private copy of the same
+    # find(1): launch.sh and PKGBUILD already share it, and a third copy is a
+    # third thing to forget when the bundle layout moves again (#170).
+    local discovery=""
+    if [[ -f "$script_dir/patch-index.sh" ]]; then
+        discovery="$script_dir/patch-index.sh"
+    elif [[ -f "$INSTALL_DIR/patch-index.sh" ]]; then
+        discovery="$INSTALL_DIR/patch-index.sh"
+    fi
+    local -a targets=()
+    if [[ -n "$discovery" ]]; then
+        # shellcheck source=patch-index.sh
+        source "$discovery"
+        patch_index_collect_targets "$build_dir"
+        targets=("${INDEX_TARGETS[@]+"${INDEX_TARGETS[@]}"}")
+    else
+        # Degrade, never abort. This runs AFTER the destructive `asar extract`
+        # above, so dying here would leave a half-installed tree and skip the
+        # rest of main() -- launcher, sentinel, doctor. master had no external
+        # dependency here at all, so aborting would make a run master completes
+        # into a hard failure. Warn loudly and fall back to the same find(1).
+        log_warn "patch-index.sh not found in $script_dir or $INSTALL_DIR; using inline chunk discovery."
+        log_warn "Your \$INSTALL_DIR checkout is stale (a pinned CLAUDE_REPO_REF leaves it"
+        log_warn "on a detached HEAD, and local edits block the pull). Repair it with:"
+        log_warn "  git -C \"$INSTALL_DIR\" checkout master && git -C \"$INSTALL_DIR\" pull"
+        targets=("$index_js")
+        local _chunk
+        while IFS= read -r _chunk; do
+            [[ -n "$_chunk" ]] && targets+=("$_chunk")
+        done < <(find "$build_dir" -maxdepth 1 -name 'index*.chunk-*.js' -type f | sort)
+    fi
 
     # enable-cowork.py exits 0 when it finds (or has already patched) the
     # platform gate in a file, and 1 otherwise. On split-entry builds the gate

@@ -44,6 +44,56 @@ if [ -d "stubs/cowork" ]; then
   cp -f stubs/cowork/*.js "linux-app-extracted/cowork/"
 fi
 
+# Apply the main-process patches and repack, the other half of "mirrors
+# launch.sh". Without this every cp above was thrown away: electron is handed
+# .asar-cache/app.asar, which is whatever launch.sh last packed, so editing a
+# stub and running this script debugged the PREVIOUS build. For a debugging
+# tool that is the worst possible failure — it looks like your change had no
+# effect.
+#
+# Only repack a tree launch.sh has ALREADY prepared. launch.sh does more than
+# patch: it rewrites package.json's entry point to frame-fix-entry.js, mirrors
+# the i18n JSONs, swaps in the Linux pty.node, and installs the plugin shim.
+# Repacking without those produces an asar that loads .vite/build/index.pre.js
+# directly, so the frame-fix wrapper never runs and the app comes up broken.
+# Copying that list here is precisely how launch.sh and PKGBUILD drifted apart
+# (#170), so require the prepared state and point at launch.sh instead.
+if [ ! -f "$ASAR_FILE" ]; then
+  echo "ERROR: $ASAR_FILE not found. Run ./launch.sh once to build it." >&2
+  exit 1
+fi
+
+if [ -d "linux-app-extracted" ]; then
+  if ! grep -q '"main":[[:space:]]*"frame-fix-entry.js"' "linux-app-extracted/package.json" 2>/dev/null; then
+    echo "ERROR: linux-app-extracted has not been prepared by launch.sh." >&2
+    echo "       Its package.json entry point is still the stock one, so a repack" >&2
+    echo "       here would produce an asar that never loads frame-fix-wrapper." >&2
+    echo "       Run ./launch.sh once first." >&2
+    exit 1
+  fi
+
+  if [ -f "$SCRIPT_DIR/patch-index.sh" ]; then
+    # shellcheck source=patch-index.sh
+    source "$SCRIPT_DIR/patch-index.sh"
+    # Same reasoning as launch.sh: persistent tree, so a miss is the norm here.
+    PATCH_INDEX_WARN_ON_MISS=0
+    patch_index_apply_all "linux-app-extracted/.vite/build"
+  else
+    echo "WARNING: patch-index.sh not found; launching without the main-process patches" >&2
+  fi
+
+  if command -v asar >/dev/null 2>&1; then
+    mkdir -p "$(dirname "$ASAR_FILE")"
+    echo "Repacking app.asar..."
+    if ! asar pack linux-app-extracted "$ASAR_FILE"; then
+      echo "ERROR: asar pack failed; refusing to launch against a stale $ASAR_FILE" >&2
+      exit 1
+    fi
+  else
+    echo "WARNING: asar not installed; launching against the existing $ASAR_FILE" >&2
+  fi
+fi
+
 # Enable logging and DevTools
 export ELECTRON_ENABLE_LOGGING=1
 export CLAUDE_ENABLE_LOGGING=1
