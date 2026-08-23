@@ -835,7 +835,12 @@ apply_patches() {
         return
     fi
     if [[ -z "$patch_script" ]]; then
-        die "enable-cowork.py not found in $script_dir or $INSTALL_DIR. Cowork cannot be enabled; re-run from a complete checkout."
+        log_error "enable-cowork.py not found in $script_dir or $INSTALL_DIR."
+        log_error "Cowork will NOT be enabled. This usually means \$INSTALL_DIR is a"
+        log_error "checkout that could no longer fast-forward (a pinned CLAUDE_REPO_REF"
+        log_error "leaves it on a detached HEAD, and local edits block the pull)."
+        log_error "Fix it with: git -C \"$INSTALL_DIR\" checkout master && git -C \"$INSTALL_DIR\" pull"
+        return 0
     fi
 
     # Newer Claude Desktop builds emit index.js as a thin entry shim that
@@ -856,13 +861,28 @@ apply_patches() {
     elif [[ -f "$INSTALL_DIR/patch-index.sh" ]]; then
         discovery="$INSTALL_DIR/patch-index.sh"
     fi
-    if [[ -z "$discovery" ]]; then
-        die "patch-index.sh not found in $script_dir or $INSTALL_DIR. Cowork cannot be enabled; re-run from a complete checkout."
+    local -a targets=()
+    if [[ -n "$discovery" ]]; then
+        # shellcheck source=patch-index.sh
+        source "$discovery"
+        patch_index_collect_targets "$build_dir"
+        targets=("${INDEX_TARGETS[@]+"${INDEX_TARGETS[@]}"}")
+    else
+        # Degrade, never abort. This runs AFTER the destructive `asar extract`
+        # above, so dying here would leave a half-installed tree and skip the
+        # rest of main() -- launcher, sentinel, doctor. master had no external
+        # dependency here at all, so aborting would make a run master completes
+        # into a hard failure. Warn loudly and fall back to the same find(1).
+        log_warn "patch-index.sh not found in $script_dir or $INSTALL_DIR; using inline chunk discovery."
+        log_warn "Your \$INSTALL_DIR checkout is stale (a pinned CLAUDE_REPO_REF leaves it"
+        log_warn "on a detached HEAD, and local edits block the pull). Repair it with:"
+        log_warn "  git -C \"$INSTALL_DIR\" checkout master && git -C \"$INSTALL_DIR\" pull"
+        targets=("$index_js")
+        local _chunk
+        while IFS= read -r _chunk; do
+            [[ -n "$_chunk" ]] && targets+=("$_chunk")
+        done < <(find "$build_dir" -maxdepth 1 -name 'index*.chunk-*.js' -type f | sort)
     fi
-    # shellcheck source=patch-index.sh
-    source "$discovery"
-    patch_index_collect_targets "$build_dir"
-    local -a targets=("${INDEX_TARGETS[@]+"${INDEX_TARGETS[@]}"}")
 
     # enable-cowork.py exits 0 when it finds (or has already patched) the
     # platform gate in a file, and 1 otherwise. On split-entry builds the gate

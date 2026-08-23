@@ -359,6 +359,46 @@ else
   fail "install.sh does not sync stubs/ (updates would run against stale stubs)"
 fi
 
+# The launchers re-patch a PERSISTENT tree, so from the second launch onward
+# every pass legitimately matches nothing. Without WARN_ON_MISS=0 that is ~9 WARN
+# lines on every launch of a healthy install -- noise, and it makes a real #166
+# silent-no-op indistinguishable from the steady state. PKGBUILD must NOT set it:
+# build() always starts from a fresh extract, where a miss is real signal.
+for _launcher in launch.sh launch-devtools.sh; do
+  if grep -qE '^\s*PATCH_INDEX_WARN_ON_MISS=0' "$REPO_ROOT/$_launcher"; then
+    pass "$_launcher silences warn-on-miss (persistent tree)"
+  else
+    fail "$_launcher does not silence warn-on-miss (9 WARNs per launch)"
+  fi
+done
+if grep -qE '^\s*PATCH_INDEX_WARN_ON_MISS=' "$REPO_ROOT/PKGBUILD"; then
+  fail "PKGBUILD overrides warn-on-miss (fresh extract per build -- a miss is real signal)"
+else
+  pass "PKGBUILD keeps warn-on-miss (fresh extract per build)"
+fi
+
+# Behavioural: a second pass over an already-patched tree must be silent under
+# the launcher setting, and must still warn under the default.
+if [[ -f "$SHARED" ]]; then
+  WBUILD="$TMP/warn_build"
+  mkdir -p "$WBUILD"
+  write_patch_fixture_backtick "$WBUILD/index.js"
+  printf 'function h(e){return e.hostname===`localhost`}\n' > "$WBUILD/mainView.js"
+  ( source "$SHARED"; patch_index_apply_all "$WBUILD" ) >/dev/null 2>&1
+  _w_default="$( ( source "$SHARED"; patch_index_apply_all "$WBUILD" ) 2>&1 >/dev/null | grep -c 'WARN' )"
+  _w_quiet="$( ( source "$SHARED"; PATCH_INDEX_WARN_ON_MISS=0; patch_index_apply_all "$WBUILD" ) 2>&1 >/dev/null | grep -c 'WARN' )"
+  if [[ "$_w_quiet" -eq 0 ]]; then
+    pass "re-patch is silent under the launcher setting"
+  else
+    fail "re-patch emitted $_w_quiet WARNs under the launcher setting"
+  fi
+  if [[ "$_w_default" -gt 0 ]]; then
+    pass "re-patch still warns under the default ($_w_default) -- #166 signal intact"
+  else
+    fail "default no longer warns on a miss (#166 signal lost)"
+  fi
+fi
+
 # Source-level guards: chunk discovery now lives in the shared script, and the
 # recipe must still run enable-cowork.py across every discovered target.
 if grep -qF "name 'index*.chunk-*.js'" "$REPO_ROOT/patch-index.sh"; then

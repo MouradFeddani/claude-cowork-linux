@@ -140,6 +140,15 @@ fi
 # shellcheck source=patch-index.sh
 source "$SCRIPT_DIR/patch-index.sh"
 
+# The launcher re-patches a PERSISTENT tree on every start, so from the second
+# launch onward every pass legitimately matches nothing -- it already did its
+# work. Warning there would print ~9 WARN lines on every launch of a perfectly
+# healthy install, which is noise AND actively harmful: it makes a real #166
+# silent-no-op indistinguishable from the normal steady state. PKGBUILD keeps
+# the warning because build() always starts from a fresh `asar extract`, where a
+# miss really does mean a pattern stopped matching.
+PATCH_INDEX_WARN_ON_MISS=0
+
 patch_index_apply_all "linux-app-extracted/.vite/build"
 
 # Only repack if stub is newer than asar (or asar doesn't exist)

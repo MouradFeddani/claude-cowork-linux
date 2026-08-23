@@ -54,6 +54,8 @@ if [ -d "linux-app-extracted" ]; then
   if [ -f "$SCRIPT_DIR/patch-index.sh" ]; then
     # shellcheck source=patch-index.sh
     source "$SCRIPT_DIR/patch-index.sh"
+    # Same reasoning as launch.sh: persistent tree, so a miss is the norm here.
+    PATCH_INDEX_WARN_ON_MISS=0
     patch_index_apply_all "linux-app-extracted/.vite/build"
   else
     echo "WARNING: patch-index.sh not found; launching without the main-process patches" >&2
