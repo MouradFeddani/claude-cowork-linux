@@ -762,10 +762,18 @@ install_stubs() {
         # launcher's protocol-forwarder search looks under it, so leaving it
         # behind means an update installs fresh stubs and then has the old ones
         # copied back over them on the next launch.
+        # install.sh, COMPAT.md, and enable-cowork.py ride along for the same
+        # reason: the generated launcher execs $INSTALL_DIR/install.sh for
+        # --doctor and --update, the launcher and doctor grep
+        # $INSTALL_DIR/COMPAT.md for the last-tested pin, and an --update run
+        # patches with $INSTALL_DIR/enable-cowork.py. Leaving them behind means
+        # every later --doctor/--update runs whatever version the install dir
+        # happened to hold — stale checks reporting false warnings against a
+        # current install.
         [[ -d "$stub_src/stubs" ]] || die "stubs/ missing from $stub_src. Re-run from a complete checkout."
         cp -rf "$stub_src/stubs" "$INSTALL_DIR/"
         local _f
-        for _f in launch.sh launch-devtools.sh patch-index.sh; do
+        for _f in launch.sh launch-devtools.sh patch-index.sh install.sh COMPAT.md enable-cowork.py; do
             [[ -f "$stub_src/$_f" ]] || die "$_f missing from $stub_src. Re-run from a complete checkout."
             cp -f "$stub_src/$_f" "$INSTALL_DIR/$_f"
         done
