@@ -186,14 +186,26 @@ NATIVE_DIR="$REPO_ROOT/stubs/@ant/claude-native"
 # Every relative require() in the native stub must resolve in the repo. A
 # require of a file that was never committed fails the same way a deployment
 # path that forgets to copy it does.
+#
+# Both quote styles, and a hard failure when the scan finds NOTHING. A pattern
+# that quietly stops matching is how a check turns into a check-shaped no-op:
+# with a single-quote-only pattern, reformatting the stub to
+# require("./safe_fs.js") would have left this reporting green while inspecting
+# an empty list -- the same vacuous pass this PR removes from
+# exec_capability_registry.test.cjs. index.js has relative requires today, so
+# zero matches means the pattern broke, not that the dependencies went away.
+dep_count=0
 missing_src=""
 while IFS= read -r dep; do
     [ -n "$dep" ] || continue
+    dep_count=$((dep_count + 1))
     [ -f "$NATIVE_DIR/$dep" ] || [ -f "$NATIVE_DIR/$dep.js" ] || missing_src="$missing_src $dep"
-done < <(grep -oE "require\('\./[^']+'\)" "$NATIVE_DIR/index.js" 2>/dev/null \
-         | sed -E "s|require\('\./([^']+)'\)|\1|")
-if [ -z "$missing_src" ]; then
-    pass "every sibling module @ant/claude-native/index.js require()s exists in stubs/"
+done < <(grep -oE "require\(['\"]\./[^'\"]+['\"]\)" "$NATIVE_DIR/index.js" 2>/dev/null \
+         | sed -E "s|require\(['\"]\./([^'\"]+)['\"]\)|\1|")
+if [ "$dep_count" -eq 0 ]; then
+    fail "no relative require() found in the native stub -- this scan's pattern has stopped matching"
+elif [ -z "$missing_src" ]; then
+    pass "all $dep_count sibling modules @ant/claude-native/index.js require()s exist in stubs/"
 else
     fail "native stub require()s files not in stubs/:$missing_src"
 fi
