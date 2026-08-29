@@ -200,13 +200,35 @@ fi
 
 # Consumers must copy the directory, not hand-list index.js. safe_fs.js landed
 # months after PKGBUILD's copy line was written and never reached the package.
-for consumer in install.sh launch.sh test-local.sh PKGBUILD; do
+for consumer in install.sh launch.sh launch-devtools.sh test-local.sh PKGBUILD nix/package.nix; do
     if grep -qE 'claude-native/\*\.js' "$REPO_ROOT/$consumer"; then
         pass "$consumer copies the whole @ant/claude-native module set"
     else
         fail "$consumer names individual native stub files -- a new sibling module will not ship"
     fi
 done
+
+# Repo-wide, so a deployment path added later cannot reintroduce this without
+# tripping the check -- PR #178's draft flatpak manifest carries the same
+# single-file copy today. Scoped to lines that actually COPY the stub, so a
+# docs mention or validate.sh's reachability curl doesn't match. Plain grep
+# rather than `git grep`: this must work in an exported tree too.
+found_any=0
+while IFS= read -r offender; do
+    [ -n "$offender" ] || continue
+    found_any=1
+    rel="${offender#"$REPO_ROOT"/}"
+    if grep -qE 'claude-native/\*\.js' "$offender"; then
+        pass "$rel names index.js but also copies the whole module set"
+    else
+        fail "$rel copies claude-native/index.js alone -- safe_fs.js will not ship"
+    fi
+done < <(grep -rlE 'cp .*claude-native/index\.js' "$REPO_ROOT" \
+             --exclude-dir=.git --exclude-dir=node_modules \
+             --exclude=index.js 2>/dev/null | sort)
+if [ "$found_any" -eq 0 ]; then
+    pass "no deployment path copies claude-native/index.js by name"
+fi
 
 # ============================================================
 # 4. frame-fix file list parity
@@ -217,7 +239,7 @@ section "frame-fix file list parity"
 # The generated launcher execs linux-app-extracted/protocol-forwarder.js for
 # the claude:// OAuth fast path. install.sh placed it there; launch.sh's sync
 # list omitted it, so an edited forwarder never reached a launch.
-for consumer in install.sh launch.sh test-local.sh; do
+for consumer in install.sh launch.sh launch-devtools.sh test-local.sh nix/package.nix; do
     if grep -q 'protocol-forwarder.js' "$REPO_ROOT/$consumer"; then
         pass "$consumer syncs protocol-forwarder.js"
     else

@@ -293,14 +293,19 @@ stage_4() {
     mkdir -p "$app_dir/node_modules/@ant/claude-native"
     cp "$REPO_ROOT/stubs/@ant/claude-swift/js/index.js" \
        "$app_dir/node_modules/@ant/claude-swift/js/index.js"
-    cp "$REPO_ROOT/stubs/@ant/claude-native/index.js" \
-       "$app_dir/node_modules/@ant/claude-native/index.js"
+    # The whole module set. Copying index.js alone modelled the deployment
+    # wrongly, which is why this harness could pass against a tree that throws
+    # MODULE_NOT_FOUND the moment the stub is require()d -- exactly what the
+    # AUR and Nix recipes were shipping.
+    cp "$REPO_ROOT"/stubs/@ant/claude-native/*.js \
+       "$app_dir/node_modules/@ant/claude-native/"
 
     assert_file_exists "$app_dir/node_modules/@ant/claude-swift/js/index.js" "Swift stub installed"
     assert_file_exists "$app_dir/node_modules/@ant/claude-native/index.js" "Native stub installed"
+    assert_file_exists "$app_dir/node_modules/@ant/claude-native/safe_fs.js" "Native stub helper installed"
 
     # Copy frame-fix files
-    for f in frame-fix-entry.js frame-fix-wrapper.js; do
+    for f in frame-fix-entry.js frame-fix-wrapper.js protocol-forwarder.js; do
         if [[ -f "$REPO_ROOT/stubs/frame-fix/$f" ]]; then
             cp "$REPO_ROOT/stubs/frame-fix/$f" "$app_dir/$f"
         fi

@@ -138,7 +138,9 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
     mkdir -p "$tree/node_modules/@ant/claude-swift/js" "$tree/node_modules/@ant/claude-native"
     cp stubs/@ant/claude-swift/js/index.js "$tree/node_modules/@ant/claude-swift/js/index.js"
-    cp stubs/@ant/claude-native/index.js "$tree/node_modules/@ant/claude-native/index.js"
+    # index.js plus every sibling it require()s -- ./safe_fs.js is loaded at the
+    # top of index.js, so a tree holding index.js alone throws MODULE_NOT_FOUND.
+    cp stubs/@ant/claude-native/*.js "$tree/node_modules/@ant/claude-native/"
     for f in frame-fix-wrapper.js frame-fix-entry.js protocol-forwarder.js; do
       [ -f "stubs/frame-fix/$f" ] && cp "stubs/frame-fix/$f" "$tree/$f"
     done

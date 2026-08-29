@@ -32,9 +32,13 @@ if [ -f "stubs/@ant/claude-swift/js/index.js" ]; then
 fi
 if [ -f "stubs/@ant/claude-native/index.js" ]; then
   mkdir -p "linux-app-extracted/node_modules/@ant/claude-native"
-  cp -f "stubs/@ant/claude-native/index.js" "linux-app-extracted/node_modules/@ant/claude-native/index.js"
+  # The whole module set, not just index.js: it require()s ./safe_fs.js at
+  # module load, so a tree with index.js alone throws MODULE_NOT_FOUND. This
+  # said "mirrors launch.sh" while copying one of the two files launch.sh does.
+  cp -f stubs/@ant/claude-native/*.js "linux-app-extracted/node_modules/@ant/claude-native/"
 fi
-for _ff_file in frame-fix-entry.js frame-fix-wrapper.js; do
+# protocol-forwarder.js too -- same list as launch.sh and install_stubs().
+for _ff_file in frame-fix-entry.js frame-fix-wrapper.js protocol-forwarder.js; do
   if [ -f "stubs/frame-fix/$_ff_file" ]; then
     cp -f "stubs/frame-fix/$_ff_file" "linux-app-extracted/$_ff_file"
   fi
