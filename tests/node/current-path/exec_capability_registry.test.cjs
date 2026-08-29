@@ -127,22 +127,26 @@ describe('exec_capability_registry', () => {
         assert.strictEqual(registry.resolve('', []), null);
       });
 
-      it('resolves system binaries', () => {
+      // t.skip(), not a bare `if (found) { ... }`. A silent guard reports a
+      // green test on a machine where the binary is absent -- which is how the
+      // #132 coverage came to assert nothing at all wherever
+      // /usr/local/bin/claude did not exist (see the note further down). An
+      // environment-dependent test that cannot run should say so in the
+      // output, not pass.
+      it('resolves system binaries', (t) => {
         const bash = ['/usr/bin/bash', '/bin/bash'].find(p => fs.existsSync(p));
-        if (bash) {
-          const result = registry.resolve(bash, ['--version']);
-          assert.ok(result);
-          assert.ok(result.capabilityId.startsWith('system-'));
-        }
+        if (!bash) return t.skip('no bash at any SYSTEM_PATHS location');
+        const result = registry.resolve(bash, ['--version']);
+        assert.ok(result);
+        assert.ok(result.capabilityId.startsWith('system-'));
       });
 
-      it('resolves system commands by prefix', () => {
+      it('resolves system commands by prefix', (t) => {
         const git = ['/usr/bin/git', '/usr/local/bin/git'].find(p => fs.existsSync(p));
-        if (git) {
-          const result = registry.resolve(git, ['status']);
-          assert.ok(result);
-          assert.ok(['system-git', 'system-cmd'].includes(result.capabilityId));
-        }
+        if (!git) return t.skip('no git at any SYSTEM_PATHS location');
+        const result = registry.resolve(git, ['status']);
+        assert.ok(result);
+        assert.ok(['system-git', 'system-cmd'].includes(result.capabilityId));
       });
 
       it('rejects paths outside all registries', () => {
@@ -247,14 +251,13 @@ describe('exec_capability_registry', () => {
         }
       });
 
-      it('resolves system binary commands', () => {
+      it('resolves system binary commands', (t) => {
         const git = ['/usr/bin/git', '/usr/local/bin/git'].find(p => fs.existsSync(p));
-        if (git) {
-          const result = registry.resolveDisclaimerCommand([git, 'status']);
-          assert.ok(result);
-          assert.strictEqual(result.cmd, git);
-          assert.deepStrictEqual(result.rest, ['status']);
-        }
+        if (!git) return t.skip('no git at any SYSTEM_PATHS location');
+        const result = registry.resolveDisclaimerCommand([git, 'status']);
+        assert.ok(result);
+        assert.strictEqual(result.cmd, git);
+        assert.deepStrictEqual(result.rest, ['status']);
       });
 
       it('rejects binaries outside registry', () => {

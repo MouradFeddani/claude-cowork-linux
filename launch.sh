@@ -11,6 +11,30 @@ cd "$SCRIPT_DIR"
 # Ensure ~/.local/bin is in PATH (common for user-local electron installs)
 export PATH="$HOME/.local/bin:$PATH"
 
+# Copy src -> dst only when the contents actually differ.
+#
+# Every sync below used a bare `cp -f`, which stamps the destination with the
+# current time whether or not a byte changed. The repack check further down asks
+# "is anything under linux-app-extracted newer than the cached app.asar?", so an
+# unconditional copy of an unchanged file answered yes on every single launch:
+# the cache never hit, "Using cached app.asar (no changes)" was unreachable
+# code, and every start repacked the whole ~300-file tree. Same failure mode the
+# mainView.js sed had (see the note in patch-index.sh) -- a write that always
+# happens, feeding an mtime check that assumes writes mean changes.
+#
+# cmp is in diffutils, present on every distro this supports; if it somehow
+# isn't, the test fails non-zero and we fall through to the copy, i.e. exactly
+# the old behaviour.
+sync_file() {
+  local src="$1" dst="$2"
+  [ -f "$src" ] || return 0
+  if [ -f "$dst" ] && cmp -s "$src" "$dst" 2>/dev/null; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$dst")"
+  cp -f "$src" "$dst"
+}
+
 # Point Cowork at the user's Claude Code CLI binary
 if [ -z "$CLAUDE_CODE_PATH" ]; then
   for _candidate in "$HOME/.local/bin/claude" "$HOME/.npm-global/bin/claude" "/usr/local/bin/claude"; do
@@ -51,31 +75,32 @@ NATIVE_STUB_SRC_FILE="stubs/@ant/claude-native/index.js"
 
 # Ensure the extracted app tree has the latest stubs baked in before packing.
 # This avoids relying on runtime module interception (ESM import() bypasses Module._load).
-if [ -f "$STUB_SRC_FILE" ]; then
-  mkdir -p "$(dirname "$STUB_FILE")"
-  cp -f "$STUB_SRC_FILE" "$STUB_FILE"
-fi
+sync_file "$STUB_SRC_FILE" "$STUB_FILE"
 
 if [ -f "$NATIVE_STUB_SRC_FILE" ]; then
-  mkdir -p "$(dirname "$NATIVE_STUB_FILE")"
   # Copy index.js plus any sibling helper modules it require()s (e.g.
   # safe_fs.js, added for the asar 1.22209.x safe-fs containment API).
   for _nat_src in stubs/@ant/claude-native/*.js; do
-    [ -f "$_nat_src" ] && cp -f "$_nat_src" "$(dirname "$NATIVE_STUB_FILE")/$(basename "$_nat_src")"
+    sync_file "$_nat_src" "$(dirname "$NATIVE_STUB_FILE")/$(basename "$_nat_src")"
   done
 fi
 
-# Sync frame-fix files so wrapper changes take effect without a full reinstall
-for _ff_file in frame-fix-entry.js frame-fix-wrapper.js; do
-  if [ -f "stubs/frame-fix/$_ff_file" ]; then
-    cp -f "stubs/frame-fix/$_ff_file" "linux-app-extracted/$_ff_file"
-  fi
+# Sync frame-fix files so wrapper changes take effect without a full reinstall.
+# protocol-forwarder.js belongs here too: the generated launcher execs
+# linux-app-extracted/protocol-forwarder.js for the claude:// OAuth fast path,
+# and only install.sh ever wrote it -- so an edited forwarder never reached a
+# launch and fixing one needed a full reinstall. install_stubs() already copies
+# all three; this is the same list.
+for _ff_file in frame-fix-entry.js frame-fix-wrapper.js protocol-forwarder.js; do
+  sync_file "stubs/frame-fix/$_ff_file" "linux-app-extracted/$_ff_file"
 done
 
 # Sync cowork orchestration modules into the extracted app tree.
 if [ -d "stubs/cowork" ]; then
   mkdir -p "linux-app-extracted/cowork"
-  cp -f stubs/cowork/*.js "linux-app-extracted/cowork/"
+  for _cw_src in stubs/cowork/*.js; do
+    sync_file "$_cw_src" "linux-app-extracted/cowork/$(basename "$_cw_src")"
+  done
 fi
 
 # Replace macOS pty.node with the Linux ELF build. The DMG ships a Mach-O
@@ -84,7 +109,7 @@ fi
 if [ -f "stubs/node-pty-linux/pty.node" ]; then
   _PTY_DEST="linux-app-extracted/node_modules/node-pty/build/Release"
   if [ -d "$_PTY_DEST" ]; then
-    cp -f stubs/node-pty-linux/pty.node "$_PTY_DEST/pty.node"
+    sync_file stubs/node-pty-linux/pty.node "$_PTY_DEST/pty.node"
   fi
 fi
 
@@ -94,11 +119,13 @@ fi
 # resources dir as a fallback for process.resourcesPath lookups.
 if [ -f "stubs/cowork/cowork-plugin-shim.sh" ]; then
   mkdir -p "linux-app-extracted/resources"
-  cp -f stubs/cowork/cowork-plugin-shim.sh "linux-app-extracted/resources/cowork-plugin-shim.sh"
+  # chmod is unconditional: it moves ctime, not mtime, so it costs no repack,
+  # and sync_file no-ops on an unchanged file that someone stripped +x from.
+  sync_file stubs/cowork/cowork-plugin-shim.sh "linux-app-extracted/resources/cowork-plugin-shim.sh"
   chmod +x "linux-app-extracted/resources/cowork-plugin-shim.sh"
   _RESOURCES_DIR="$(dirname "$ELECTRON_BIN")/resources"
   if [ -d "$_RESOURCES_DIR" ]; then
-    cp -f stubs/cowork/cowork-plugin-shim.sh "$_RESOURCES_DIR/cowork-plugin-shim.sh"
+    sync_file stubs/cowork/cowork-plugin-shim.sh "$_RESOURCES_DIR/cowork-plugin-shim.sh"
     chmod +x "$_RESOURCES_DIR/cowork-plugin-shim.sh"
   fi
 fi
@@ -116,11 +143,26 @@ if [ -d "linux-app-extracted/resources" ] && [ ! -d "linux-app-extracted/resourc
   done
 fi
 
-# Fix entry point: use frame-fix-entry.js so BrowserWindow gets native Linux frames
+# Fix entry point: use frame-fix-entry.js so BrowserWindow gets native Linux frames.
+#
+# Guard on the SUBSTITUTION target, not a looser marker -- PKGBUILD's copy of
+# this patch already does. The guard used to be `"main":.*index\.pre\.js"`
+# while the sed demanded a quote immediately before `.vite`, so a build that
+# spelled its main `"./.vite/build/index.pre.js"` passed the guard, no-oped in
+# the sed, printed "Fixing entry point..." as though it had worked, and left
+# the app running its own entry point. sed -i rewrites the file on a miss too,
+# which bumped mtime and forced a full asar repack on every launch, forever --
+# the same shape as the mainView.js bug noted in patch-index.sh.
 PKG_JSON="linux-app-extracted/package.json"
-if [ -f "$PKG_JSON" ] && grep -q '"main":.*index\.pre\.js"' "$PKG_JSON"; then
-  echo "Fixing entry point to use frame-fix-entry.js..."
-  sed -i 's|"main":.*"\.vite/build/index\.pre\.js"|"main": "frame-fix-entry.js"|' "$PKG_JSON"
+if [ -f "$PKG_JSON" ]; then
+  if grep -q '"main":.*"\.vite/build/index\.pre\.js"' "$PKG_JSON"; then
+    echo "Fixing entry point to use frame-fix-entry.js..."
+    sed -i 's|"main":.*"\.vite/build/index\.pre\.js"|"main": "frame-fix-entry.js"|' "$PKG_JSON"
+  elif grep -q 'index\.pre\.js' "$PKG_JSON"; then
+    echo "WARN: package.json still points at index.pre.js but not in the shape this patch rewrites." >&2
+    echo "      The entry point was NOT repointed at frame-fix-entry.js; expect macOS titlebars" >&2
+    echo "      and a renderer shell that never loads. The bundle layout has changed." >&2
+  fi
 fi
 
 # ── Main-process patches ────────────────────────────────────────────────────

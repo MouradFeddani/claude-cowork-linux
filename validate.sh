@@ -96,10 +96,22 @@ fi
 step "6. Recent Errors Check"
 
 STARTUP_LOG="$LOG_DIR/startup.log"
+# `grep -c` PRINTS 0 and EXITS 1 when it matches nothing, so `$(grep -c ... ||
+# echo 0)` captured "0\n0" -- and `[[ "0\n0" -gt 0 ]]` is a bash arithmetic
+# syntax error. A clean log, the case this whole section is about, printed three
+# "syntax error in expression" lines and only reached the right answer because
+# the failed comparison happens to be false. Keep grep's own count; drop only
+# its exit status.
+count_in_log() {
+    local n
+    n=$(grep -c "$1" "$STARTUP_LOG" 2>/dev/null) || true
+    printf '%s' "${n:-0}"
+}
+
 if [[ -f "$STARTUP_LOG" ]]; then
-    DISPOSED_COUNT=$(grep -c "webFrameMain.*disposed" "$STARTUP_LOG" 2>/dev/null || echo 0)
-    GPU_ERRORS=$(grep -c "SharedImageManager\|ProduceSkia" "$STARTUP_LOG" 2>/dev/null || echo 0)
-    MCP_DISCONNECTS=$(grep -c "mcp_unexpected_close" "$STARTUP_LOG" 2>/dev/null || echo 0)
+    DISPOSED_COUNT=$(count_in_log "webFrameMain.*disposed")
+    GPU_ERRORS=$(count_in_log "SharedImageManager\|ProduceSkia")
+    MCP_DISCONNECTS=$(count_in_log "mcp_unexpected_close")
 
     if [[ $DISPOSED_COUNT -gt 0 ]]; then
         warn "Found $DISPOSED_COUNT 'webFrameMain disposed' errors in log"
@@ -141,9 +153,16 @@ echo "  - Minimize/restore window"
 echo "  - Run for 5+ minutes"
 echo ""
 
-read -p "Launch now? [y/N] " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    info "Launching Claude Desktop..."
-    exec ./launch.sh
+# Only prompt on a terminal. Under `set -e` a `read` with no stdin returns
+# non-zero and aborts the script, so piping this file or running it from CI
+# ended a fully passing validation run with a non-zero exit and no explanation.
+if [[ -t 0 ]]; then
+    read -p "Launch now? [y/N] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        info "Launching Claude Desktop..."
+        exec ./launch.sh
+    fi
+else
+    info "Not a terminal; skipping the launch prompt. Run ./launch.sh when ready."
 fi
