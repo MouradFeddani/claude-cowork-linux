@@ -297,18 +297,23 @@ def patch_automount_darwin_leak(filepath):
         print(f"  Automount-root check: already patched")
         return True
 
-    match = AUTOMOUNT_DARWIN_LEAK_RE.search(content)
-    if not match:
+    # subn, like every other pass in this file, not search + splice. The marker
+    # is written once per FILE, so a first-match-only rewrite leaves any second
+    # occurrence in the same chunk unpatched AND marked as done -- the pass can
+    # never come back for it. Nothing guarantees the bundler emits this check
+    # once: it is a small helper, and minifiers inline small helpers per call
+    # site. Rewriting all of them costs nothing when there is only one.
+    new_content, count = AUTOMOUNT_DARWIN_LEAK_RE.subn(r'\1', content)
+    if count == 0:
         print(f"  Automount-root check: no matching site found")
         return True
 
-    content = content[:match.start()] + match.group(1) + content[match.end():]
-    content += AUTOMOUNT_DARWIN_LEAK_MARKER
+    new_content += AUTOMOUNT_DARWIN_LEAK_MARKER
 
     with open(filepath, 'w') as f:
-        f.write(content)
+        f.write(new_content)
 
-    print(f"  Automount-root check patched: darwin branch no longer treats /home as an automount root")
+    print(f"  Automount-root check patched: {count} site(s) -- darwin branch no longer treats /home as an automount root")
     return True
 
 

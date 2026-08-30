@@ -74,6 +74,7 @@ function handoff(){mB.app.invalidateCurrentActivity();mB.app.setUserActivity(qq,
 function wrapSpawn(t){return process.platform!=="darwin"?t:{cmd:rpt(),args:[t.cmd,...t.args]}}
 const res=kk.app.isPackaged?process.resourcesPath:someFallback;
 const host=kk.app.isPackaged?jn.join(process.resourcesPath,"app.asar","mcp-runtime","nodeHost.js"):jn.join(kk.app.getAppPath(),"nodeHost.js");
+function Ce(e){let t=process.platform==="darwin"?/^\/(net|home)(\/|$)/:/^\/net(\/|$)/;return[e,F(e)].filter(x=>x!==null).some(x=>t.test(S(x)))}
 EOF
 }
 
@@ -105,6 +106,7 @@ function wrapSpawn(t){return process.platform!==`darwin`?t:{cmd:rpt(),args:[t.cm
 const res=T.app.isPackaged?process.resourcesPath:someFallback;
 function c(e,t){let n=i.app.isPackaged?r.default.join(process.resourcesPath,`app.asar`):i.app.getAppPath();return r.default.join(n,`.vite`)}
 function v(){return o.default.join(process.resourcesPath,`app.asar`,`.vite`,`build`,`shell-path-worker`,`shellPathWorker.js`)}
+function Ce(e){let t=process.platform===`darwin`?/^\/(net|home)(\/|$)/:/^\/net(\/|$)/;return[e,F(e)].filter(x=>x!==null).some(x=>t.test(S(x)))}
 EOF
 }
 
@@ -133,6 +135,15 @@ assert_grep  "$CHUNK" 'if\(!\$m\(n\)&&!\(n\.senderFrame&&n\.senderFrame\.url&&n\
              "IPC guard exempts file:// (rotated validator \$m + arg n)"
 assert_grep  "$CHUNK" 'return"darwin-x64"'             "getHostPlatform throw -> darwin-x64"
 refute_grep  "$CHUNK" 'error:`Unsupported platform'    "return-style platform gate neutralized"
+# Automount-root check (#172). The bundle picks its regex off process.platform,
+# which we spoof to darwin, so it evaluates the macOS branch -- and that branch
+# additionally refuses everything under /home. Correct on macOS, where network
+# homes are automounted there; wrong on Linux, where /home is just home. The
+# patch forces the non-darwin branch. /net must STAY refused: this corrects
+# which branch an unmodified check evaluates, it does not weaken the check.
+assert_grep  "$CHUNK" 'cowork-automount-patched'       "automount marker present"
+refute_grep  "$CHUNK" 'net\|home'                      "automount: darwin branch (/home) removed"
+assert_grep  "$CHUNK" 'let t=/\^\\/net'                 "automount: /net branch survives -- still refused"
 assert_parses "$CHUNK" "chunk parses after enable-cowork.py"
 
 # Exit-code contract that install.sh apply_patches relies on to log success
@@ -447,6 +458,8 @@ refute_grep "$BTCHUNK" 'throw Error\(`Unsupported platform'          "backtick: 
 assert_grep "$BTCHUNK" 'did not pass origin validation'              "backtick: IPC guard site still present"
 assert_grep "$BTCHUNK" 'startsWith\("file://"\)'                    "backtick: IPC origin guard exempts file://"
 refute_grep "$BTCHUNK" 'error:`Unsupported platform'                 "backtick: return-style platform gate neutralized"
+refute_grep "$BTCHUNK" 'net\|home'                                   "backtick: automount darwin branch removed"
+assert_grep "$BTCHUNK" 'let t=/\^\\/net'                              "backtick: automount /net branch survives"
 assert_parses "$BTCHUNK" "backtick: chunk parses after enable-cowork.py"
 
 # The fixture above is found via the exact `ke()` entry in KNOWN_PATTERNS, so it
@@ -493,6 +506,36 @@ function hostPlat(){throw new Error("Unsupported platform: "+fmt(name(x)))}
 EOF
 python3 "$REPO_ROOT/enable-cowork.py" "$DEEPGATE" >/dev/null 2>&1
 assert_parses "$DEEPGATE" "deep nesting: fails closed, chunk still parses"
+
+# The marker is written once per FILE, so a first-match-only rewrite leaves any
+# second occurrence unpatched AND marked as done -- the pass can never come back
+# for it. Nothing guarantees the bundler emits this check once: it is a small
+# helper, and minifiers inline small helpers per call site. This fixture fails
+# against a search+splice implementation and passes against subn.
+AUTOMOUNT2="$TMP/automount_two_sites.js"
+cat > "$AUTOMOUNT2" <<'EOF'
+"use strict";
+function ke(){let t=process.platform;if(t!==`darwin`&&t!==`win32`)return{status:`unsupported`,reason:`nope`};return{status:`supported`}}
+function a(e){let t=process.platform===`darwin`?/^\/(net|home)(\/|$)/:/^\/net(\/|$)/;return t.test(e)}
+function b(e){let t=process.platform===`darwin`?/^\/(net|home)(\/|$)/:/^\/net(\/|$)/;return t.test(e)}
+EOF
+python3 "$REPO_ROOT/enable-cowork.py" "$AUTOMOUNT2" >/dev/null 2>&1
+refute_grep "$AUTOMOUNT2" 'net\|home'   "automount: every site rewritten, not just the first"
+if [ "$(grep -c 'let t=/\^\\/net' "$AUTOMOUNT2")" = "2" ]; then
+  pass "automount: both /net branches survive"
+else
+  fail "automount: expected 2 surviving /net branches, got $(grep -c 'let t=/\^\\/net' "$AUTOMOUNT2")"
+fi
+assert_parses "$AUTOMOUNT2" "automount: two-site chunk parses after patching"
+
+# Marker-guarded: a second run must not touch a file it already patched.
+_before="$(cat "$AUTOMOUNT2")"
+python3 "$REPO_ROOT/enable-cowork.py" "$AUTOMOUNT2" >/dev/null 2>&1
+if [ "$_before" = "$(cat "$AUTOMOUNT2")" ]; then
+  pass "automount: re-running is a marker-guarded no-op"
+else
+  fail "automount: re-running changed an already-patched file"
+fi
 
 # The corruption guard must actually fire, on stderr, without changing the
 # exit code — both callers read non-zero as "no platform gate here", so failing
