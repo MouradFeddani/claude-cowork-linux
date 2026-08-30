@@ -52,6 +52,14 @@ jobs:
       - name: Cowork patch passes
         run: bash tests/test-cowork-patch.sh
 
+      # Drives launch.sh end to end against a temp tree with fake electron/asar
+      # binaries. Guards the repack cache (a `cp -f` that always stamps mtime
+      # made "Using cached app.asar" unreachable and repacked ~300 files on
+      # every start) and the stub module-set parity that let PKGBUILD ship
+      # @ant/claude-native without the safe_fs.js its index.js require()s.
+      - name: Launcher stub sync
+        run: bash tests/test-launcher-sync.sh
+
       # Stage 1 of the install harness is pure static analysis -- no network, no
       # Docker, no Arch -- so it can run here even though stages 2-8 cannot.
       # Nothing ran this file at all, which is how it came to py_compile

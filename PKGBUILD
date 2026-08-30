@@ -126,8 +126,14 @@ build() {
     mkdir -p "${srcdir}/linux-app-extracted/node_modules/@ant/claude-native"
     cp -f "${_repo}/stubs/@ant/claude-swift/js/index.js" \
           "${srcdir}/linux-app-extracted/node_modules/@ant/claude-swift/js/index.js"
-    cp -f "${_repo}/stubs/@ant/claude-native/index.js" \
-          "${srcdir}/linux-app-extracted/node_modules/@ant/claude-native/index.js"
+    # index.js plus every sibling helper it require()s. safe_fs.js landed with
+    # the 1.22209.x safe-fs containment API and is require()d unconditionally at
+    # the top of index.js, but this line still named index.js alone -- so the
+    # package shipped a stub whose first require() throws MODULE_NOT_FOUND, four
+    # months after the helper was added. install.sh and launch.sh both copy the
+    # whole glob; this is the same copy-loop drift as #170, one directory over.
+    cp -f "${_repo}"/stubs/@ant/claude-native/*.js \
+          "${srcdir}/linux-app-extracted/node_modules/@ant/claude-native/"
 
     # Copy frame-fix files
     cp -f "${_repo}/stubs/frame-fix/frame-fix-entry.js" \
