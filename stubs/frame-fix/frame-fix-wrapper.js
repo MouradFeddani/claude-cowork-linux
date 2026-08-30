@@ -602,6 +602,96 @@ function coworkSpaceRoute(targetUrl) {
   }
 }
 
+// Issue #174: the welcome screen's heading picks its platform word from the
+// darwin spoof we present to the Cowork gate, so signed-out Linux users see
+// "Claude for Mac". Un-spoofing isn't an option -- that's the whole
+// mechanism -- so this rewrites the rendered text node in place: strike
+// through "Mac" (U+0336 combining overlay, so it stays a plain string that
+// survives minifier rotation) and append "Linux".
+//
+// The observer is deliberately short-lived, and that is the whole design
+// constraint here. Watching document.body with { subtree, characterData } and
+// running a full-document TreeWalker in the callback -- the obvious way to
+// write this -- means every streamed token mutates a text node and triggers a
+// walk of every text node in the document: quadratic in conversation length,
+// running forever, to fix a cosmetic label on a screen the user sees once
+// before signing in. Instead:
+//
+//   - a successful rewrite disconnects the observer; the heading is a
+//     signed-out artifact and there is nothing left to watch for on that page;
+//   - a deadline disconnects it on pages where the heading never appears,
+//     which is every signed-in session;
+//   - childList only. A remount inserts the heading as a subtree, which is a
+//     childList record. An in-place edit of an existing text node from some
+//     other string to exactly "Mac" is missed, and is not a shape this screen
+//     produces;
+//   - a burst of records coalesces into one walk per frame.
+//
+// So the cost is bounded to the first seconds of a navigation, and the
+// dom-ready/did-navigate handlers below re-arm it on the next one. The
+// tradeoff is a welcome screen that remounts mid-page, with no navigation and
+// after the deadline, keeps its "Mac" -- a label, not a break.
+var MAC_LINUX_OBSERVER_DEADLINE_MS = 15000;
+
+function buildMacLinuxRewriteScript() {
+  return [
+    '(function(){',
+    '  try {',
+    '    if (!document.body) return;',
+    '    var STRIKE = "\\u0336";',
+    '    function struck(s) { return s.split("").join(STRIKE) + STRIKE; }',
+    '    function rewrite() {',
+    '      var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);',
+    '      var node, hit = false;',
+    '      while ((node = walker.nextNode())) {',
+    '        if (node.nodeValue !== "Mac") continue;',
+    '        var el = node.parentElement, depth = 0;',
+    '        while (el && depth < 5) {',
+    '          if (el.textContent && el.textContent.trim() === "Claude for Mac") {',
+    '            node.nodeValue = struck("Mac") + " Linux";',
+    '            hit = true;',
+    '            break;',
+    '          }',
+    '          el = el.parentElement;',
+    '          depth++;',
+    '        }',
+    '      }',
+    '      return hit;',
+    '    }',
+    '    function release(o) {',
+    '      try { o.disconnect(); } catch (e) {}',
+    '      if (window.__coworkMacLinuxObserver === o) { window.__coworkMacLinuxObserver = null; }',
+    '    }',
+    // Defer to a live observer BEFORE walking. The handlers below inject on
+    // both dom-ready and did-navigate, so without this the second injection
+    // pays for a second full-document walk while an observer is already
+    // watching for the very thing it would find. An observer is only installed
+    // when a walk found nothing, and a heading can only appear afterwards via a
+    // mutation -- which is what the observer is subscribed to. So there is
+    // nothing the redundant walk could catch that the live observer will not.
+    // (Its walk is rAF-scheduled, so in a backgrounded window the rewrite lands
+    // a little later than an immediate walk would. That is a heading nobody is
+    // looking at.) The global is nulled on release, so non-null means connected.
+    '    var live = window.__coworkMacLinuxObserver;',
+    '    if (live) return;',
+    '    if (rewrite()) return;',
+    '    var queued = false;',
+    '    var observer = new MutationObserver(function () {',
+    '      if (queued) return;',
+    '      queued = true;',
+    '      requestAnimationFrame(function () {',
+    '        queued = false;',
+    '        if (rewrite()) { release(observer); }',
+    '      });',
+    '    });',
+    '    window.__coworkMacLinuxObserver = observer;',
+    '    observer.observe(document.body, { childList: true, subtree: true });',
+    '    setTimeout(function () { release(observer); }, ' + MAC_LINUX_OBSERVER_DEADLINE_MS + ');',
+    '  } catch (e) {}',
+    '})();',
+  ].join('\n');
+}
+
 // Build the JS injected into the renderer to perform client-side navigation.
 // The route is JSON-encoded (never string-concatenated raw) so a hostile space
 // name/URL cannot break out of the string literal into executable code.
@@ -1428,9 +1518,11 @@ Module.prototype.require = function(id) {
         _appRef.on('web-contents-created', (_ev, contents) => {
           contents.on('dom-ready', () => {
             contents.insertCSS(_fixCSS).catch(() => {});
+            contents.executeJavaScript(buildMacLinuxRewriteScript()).catch(() => {});
           });
           contents.on('did-navigate', () => {
             contents.insertCSS(_fixCSS).catch(() => {});
+            contents.executeJavaScript(buildMacLinuxRewriteScript()).catch(() => {});
           });
           // Issue #147: convert a full-page navigation to a locally-created
           // Cowork space into an in-app SPA route change, so it loads from IPC
