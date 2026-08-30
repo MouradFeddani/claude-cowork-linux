@@ -256,6 +256,24 @@ test('a document with no body is a no-op, not a throw', () => {
   assert.equal(page.observers.length, 0);
 });
 
+test('re-injection with a live observer does not pay for another full walk', () => {
+  // dom-ready and did-navigate both inject. Walking again while an observer is
+  // already watching is exactly the cost this change exists to remove, so the
+  // ordering that avoids it is pinned here rather than left to reading.
+  const page = makePage(elem([text('no heading')]));
+  page.run();
+  const walksAfterFirstInjection = page.walks;
+
+  page.run();
+  page.run();
+
+  assert.equal(
+    page.walks,
+    walksAfterFirstInjection,
+    'a live observer already covers what a re-injection walk would find'
+  );
+});
+
 test('re-injecting on the same page does not stack observers', () => {
   const page = makePage(elem([text('no heading')]));
   page.run();

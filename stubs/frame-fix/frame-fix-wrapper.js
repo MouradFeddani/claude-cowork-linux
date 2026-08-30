@@ -662,9 +662,19 @@ function buildMacLinuxRewriteScript() {
     '      try { o.disconnect(); } catch (e) {}',
     '      if (window.__coworkMacLinuxObserver === o) { window.__coworkMacLinuxObserver = null; }',
     '    }',
+    // Defer to a live observer BEFORE walking. The handlers below inject on
+    // both dom-ready and did-navigate, so without this the second injection
+    // pays for a second full-document walk while an observer is already
+    // watching for the very thing it would find. An observer is only installed
+    // when a walk found nothing, and a heading can only appear afterwards via a
+    // mutation -- which is what the observer is subscribed to. So there is
+    // nothing the redundant walk could catch that the live observer will not.
+    // (Its walk is rAF-scheduled, so in a backgrounded window the rewrite lands
+    // a little later than an immediate walk would. That is a heading nobody is
+    // looking at.) The global is nulled on release, so non-null means connected.
     '    var live = window.__coworkMacLinuxObserver;',
-    '    if (rewrite()) { if (live) { release(live); } return; }',
     '    if (live) return;',
+    '    if (rewrite()) return;',
     '    var queued = false;',
     '    var observer = new MutationObserver(function () {',
     '      if (queued) return;',
